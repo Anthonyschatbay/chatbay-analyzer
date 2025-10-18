@@ -1,2 +1,2 @@
-web: python action_handler.py
+web: gunicorn action_handler:app
 
