@@ -22,7 +22,10 @@ def home():
 @app.route("/analyze_gallery")
 def analyze_gallery():
     try:
-        r = requests.get(GALLERY_URL, timeout=20)
+        headers = {
+            "User-Agent": "ChatbayAnalyzer/1.0 (+https://chatbay-analyzer.onrender.com)"
+        }
+        r = requests.get(GALLERY_URL, headers=headers, timeout=20)
         r.raise_for_status()
         gallery = r.json()
 
