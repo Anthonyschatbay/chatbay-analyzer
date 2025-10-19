@@ -1,19 +1,7 @@
 # ──────────────────────────────────────────────────────────────
-# Chatbay → GPT-4o Vision Analyzer + eBay CSV Exporter (v4.6 HYBRID)
-# Flask app for Render.com deployment
-# Hybrid Mode:
-#   • You (in chat) choose: photos_per_item & condition (new|preowned|parts)
-#   • App reads them as query params on /export_csv & /preview_csv
-#   • /preview_csv returns first 2 rows as JSON (proof before print)
-#
-# Upgrades in v4.6:
-#   • Safe float parsing for BATCH_SLEEP (no more '5.0' error)
-#   • Intelligent batch throttling (auto-pause between groups)
-#   • Descriptive SEO titles, no “Vintage Collectible”
-#   • /status route exposes live config
-#   • ?gallery= override supported
+# Chatbay → GPT-4o Vision Analyzer + eBay CSV Exporter (v4.7 PRODUCTION)
+# Flask app for Render deployment
 # ──────────────────────────────────────────────────────────────
-
 import os, io, csv, json, time, datetime, traceback, requests
 from typing import Dict, Any, List, Optional
 from flask import Flask, jsonify, send_file, request
@@ -26,31 +14,27 @@ app = Flask(__name__)
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ──────────────────────────────────────────────────────────────
-# Safe env readers
+# Env helpers
 # ──────────────────────────────────────────────────────────────
 def getenv_float(key: str, default: float) -> float:
-    """Safely parse environment variable as float."""
     try:
-        v = os.getenv(key, str(default)).strip()
-        return float(v)
+        return float(os.getenv(key, str(default)).strip())
     except Exception:
         print(f"⚠️ Invalid float for {key}, using default {default}")
-        return float(default)
+        return default
 
 def getenv_int(key: str, default: int) -> int:
-    """Safely parse environment variable as int."""
     try:
-        v = os.getenv(key, str(default)).strip()
-        return int(float(v))
+        return int(float(os.getenv(key, str(default)).strip()))
     except Exception:
         print(f"⚠️ Invalid int for {key}, using default {default}")
-        return int(default)
+        return default
 
 def getenv_str(key: str, default: str) -> str:
     return str(os.getenv(key, default)).strip()
 
 # ──────────────────────────────────────────────────────────────
-# Core configuration
+# Config
 # ──────────────────────────────────────────────────────────────
 DEFAULT_PHOTOS_PER_ITEM = getenv_int("DEFAULT_PHOTOS_PER_ITEM", 4)
 DEFAULT_CONDITION = getenv_str("DEFAULT_CONDITION", "preowned").lower()
@@ -62,11 +46,12 @@ DEFAULT_SHIP_PROFILE = getenv_str("EBAY_SHIP_PROFILE", "7.99 FLAT")
 DEFAULT_RET_PROFILE = getenv_str("EBAY_RET_PROFILE", "No returns accepted")
 DEFAULT_PAY_PROFILE = getenv_str("EBAY_PAY_PROFILE", "eBay Payments")
 
-CHUNK_SIZE = getenv_int("BATCH_LIMIT", 5)                   # groups per batch
-SLEEP_BETWEEN_BATCHES = getenv_float("BATCH_SLEEP", 5.0)    # seconds between batches
+CHUNK_SIZE = getenv_int("BATCH_LIMIT", 3)
+SLEEP_BETWEEN_BATCHES = getenv_float("BATCH_SLEEP", 6.0)
+MAX_RETRIES = getenv_int("MAX_RETRIES", 5)
 
 # ──────────────────────────────────────────────────────────────
-# Category mapping
+# Category map
 # ──────────────────────────────────────────────────────────────
 CATEGORY_MAP = {
     "t-shirt": "15687", "shirt": "15687", "sweatshirt": "155226", "hoodie": "155226",
@@ -83,19 +68,18 @@ CATEGORY_MAP = {
 def match_category_id(text: str) -> str:
     if not text: return "15687"
     lower = text.lower()
-    for key, cid in CATEGORY_MAP.items():
-        if key in lower:
+    for k, cid in CATEGORY_MAP.items():
+        if k in lower:
             return cid
     return "15687"
 
 # ──────────────────────────────────────────────────────────────
-# Condition helpers
+# Condition normalization
 # ──────────────────────────────────────────────────────────────
 CONDITION_ID_MAP = {"new": 1000, "preowned": 3000, "parts": 7000}
 
 def normalize_condition(value: str) -> str:
-    if not value:
-        return DEFAULT_CONDITION
+    if not value: return DEFAULT_CONDITION
     v = value.strip().lower()
     if v in {"new", "preowned", "parts"}: return v
     if v in {"used", "vintage", "worn"}: return "preowned"
@@ -114,8 +98,7 @@ def current_gmt_schedule() -> str:
     return next_day_utc.strftime("%Y-%m-%d %H:%M:%S")
 
 def clean_price(raw: str, fallback="34.99") -> str:
-    if not raw:
-        return fallback
+    if not raw: return fallback
     s = str(raw).replace("$", "").split("-")[0].strip()
     return "".join(ch for ch in s if ch.isdigit() or ch == ".") or fallback
 
@@ -143,7 +126,7 @@ def require_params_or_400():
     return None
 
 # ──────────────────────────────────────────────────────────────
-# Routes
+# Core routes
 # ──────────────────────────────────────────────────────────────
 @app.route("/health")
 def health():
@@ -151,32 +134,28 @@ def health():
 
 @app.route("/status")
 def status():
-    try:
-        config = {
-            "version": "v4.6",
-            "default_photos_per_item": DEFAULT_PHOTOS_PER_ITEM,
-            "default_condition": DEFAULT_CONDITION,
-            "gallery_url": GALLERY_URL,
-            "batch_limit_groups": CHUNK_SIZE,
-            "batch_sleep_seconds": SLEEP_BETWEEN_BATCHES,
-            "location": DEFAULT_LOCATION,
-            "ship_profile": DEFAULT_SHIP_PROFILE,
-            "return_profile": DEFAULT_RET_PROFILE,
-            "payment_profile": DEFAULT_PAY_PROFILE,
-            "timestamp": datetime.datetime.utcnow().isoformat(),
-        }
-        return jsonify({"ok": True, "config": config}), 200
-    except Exception:
-        return jsonify({"error": traceback.format_exc()}), 500
+    cfg = {
+        "version": "v4.7",
+        "batch_limit": CHUNK_SIZE,
+        "batch_sleep": SLEEP_BETWEEN_BATCHES,
+        "max_retries": MAX_RETRIES,
+        "default_condition": DEFAULT_CONDITION,
+        "default_photos": DEFAULT_PHOTOS_PER_ITEM,
+        "gallery_url": GALLERY_URL,
+    }
+    return jsonify(cfg), 200
 
+# ──────────────────────────────────────────────────────────────
+# Analyze gallery with rate-limit retry logic
+# ──────────────────────────────────────────────────────────────
 @app.route("/analyze_gallery")
 def analyze_gallery():
     try:
         gallery_url = get_gallery_url()
-        headers = {"User-Agent": "ChatbayAnalyzer/4.6", "Accept": "application/json"}
-        r = requests.get(gallery_url, headers=headers, timeout=30)
+        print(f"📸 Fetching gallery: {gallery_url}")
+        r = requests.get(gallery_url, timeout=30)
         if r.status_code != 200:
-            return jsonify({"error": "Gallery fetch failed", "status": r.status_code, "url": gallery_url}), r.status_code
+            return jsonify({"error": "Gallery fetch failed", "status": r.status_code}), r.status_code
 
         gallery = r.json()
         groups = gallery.get("groups", [])
@@ -185,53 +164,80 @@ def analyze_gallery():
 
         results = []
         total = len(groups)
+        print(f"🧠 Starting {total} groups — {CHUNK_SIZE} per batch, sleep={SLEEP_BETWEEN_BATCHES}s")
+
+        def analyze_one(idx, g):
+            photos = [u.strip() for u in str(g.get("photo_urls", "")).split(",") if u.strip()]
+            if not photos: return None
+
+            for attempt in range(1, MAX_RETRIES + 1):
+                try:
+                    comp = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[{
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": (
+                                    "Analyze these product photos and return concise JSON with keys: "
+                                    "title, category, description, price_estimate, brand, color, material, size, features, pattern."
+                                )},
+                                *[{"type": "image_url", "image_url": {"url": u, "detail": "high"}} for u in photos],
+                            ]
+                        }],
+                        max_tokens=500,
+                    )
+                    raw = comp.choices[0].message.content.strip()
+                    try:
+                        parsed = json.loads(raw)
+                        if not isinstance(parsed, dict):
+                            raise ValueError
+                    except Exception:
+                        parsed = {"group": idx, "raw": raw}
+                    parsed["photos"] = photos
+                    return parsed
+
+                except Exception as e:
+                    msg = str(e)
+                    if "Rate limit" in msg or "429" in msg:
+                        delay = SLEEP_BETWEEN_BATCHES * attempt * 1.5
+                        print(f"⏳ 429 rate limit — retry {attempt}/{MAX_RETRIES} after {delay:.1f}s")
+                        time.sleep(delay)
+                        continue
+                    elif "502" in msg or "500" in msg:
+                        delay = 2 * attempt
+                        print(f"⚠️ 5xx error — retry {attempt}/{MAX_RETRIES} after {delay:.1f}s")
+                        time.sleep(delay)
+                        continue
+                    else:
+                        print(f"❌ Failed group {idx}: {msg}")
+                        return {"group": idx, "error": msg, "photos": photos}
+            return {"group": idx, "error": "Failed after retries", "photos": photos}
+
+        # process with batch pacing
         for i in range(0, total, CHUNK_SIZE):
             batch = groups[i:i + CHUNK_SIZE]
-            print(f"🧠 Processing batch {i//CHUNK_SIZE+1}/{(total-1)//CHUNK_SIZE+1} ({len(batch)} groups)...")
-            for idx, g in enumerate(batch, 1):
-                photos = [u.strip() for u in str(g.get("photo_urls", "")).split(",") if u.strip()]
-                if not photos:
-                    continue
-                comp = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": (
-                                "Analyze these product photos and return concise JSON with keys: "
-                                "title, category, description, price_estimate, brand, color, material, size, features, pattern."
-                            )},
-                            *[{"type": "image_url", "image_url": {"url": u, "detail": "high"}} for u in photos],
-                        ]
-                    }],
-                    max_tokens=500,
-                )
-                raw = comp.choices[0].message.content.strip()
-                try:
-                    parsed = json.loads(raw)
-                    if not isinstance(parsed, dict):
-                        raise ValueError
-                except Exception:
-                    parsed = {"group": idx, "raw": raw}
-                parsed["photos"] = photos
-                results.append(parsed)
-
-            if i + CHUNK_SIZE < total:
-                print(f"⏸ Sleeping {SLEEP_BETWEEN_BATCHES} seconds to avoid rate limit...")
+            print(f"🚀 Processing batch {i//CHUNK_SIZE+1}/{(total-1)//CHUNK_SIZE+1}")
+            for j, g in enumerate(batch, start=1):
+                idx = i + j
+                result = analyze_one(idx, g)
+                if result: results.append(result)
                 time.sleep(SLEEP_BETWEEN_BATCHES)
+            print(f"✅ Batch {i//CHUNK_SIZE+1} done — sleeping {SLEEP_BETWEEN_BATCHES}s")
+            time.sleep(SLEEP_BETWEEN_BATCHES)
 
-        print(f"✅ Completed {len(results)} groups total.")
+        print(f"🏁 Finished {len(results)} groups total")
         return jsonify(results), 200
+
     except Exception:
         return jsonify({"error": traceback.format_exc()}), 500
 
 # ──────────────────────────────────────────────────────────────
-# CSV + Row builder
+# CSV construction
 # ──────────────────────────────────────────────────────────────
 def ebay_row_from_analysis(a: Dict[str, Any], idx: int, photos_per_item: int, condition: str) -> Dict[str, str]:
     title_raw = (a.get("title") or f"Item {idx}").strip()
     desc_raw = (a.get("description") or "Collectible item.").strip()
-    category_text = a.get("category", "") or ""
+    category_text = a.get("category", "")
     cat_id = match_category_id(category_text)
     price = clean_price(a.get("price_estimate", "34.99"))
     brand = (a.get("brand") or "").strip()
@@ -256,24 +262,22 @@ def ebay_row_from_analysis(a: Dict[str, Any], idx: int, photos_per_item: int, co
 
     cond_id = CONDITION_ID_MAP.get(normalize_condition(condition), 3000)
     photos = a.get("photos") or []
-    item_photo_url = ",".join(photos[:max(1, min(12, int(photos_per_item)))])
+    photo_urls = ",".join(photos[:max(1, min(12, photos_per_item))])
 
     return {
         "Action(SiteID=US|Country=US|Currency=USD|Version=1193)": "Add",
-        "Custom label (SKU)": "",
         "Category ID": cat_id,
         "Category name": category_text or "Other",
         "Title": title,
         "Schedule Time": current_gmt_schedule(),
         "Start price": price,
         "Quantity": "1",
-        "Item photo URL": item_photo_url,
+        "Item photo URL": photo_urls,
         "Condition ID": str(cond_id),
         "Description": desc_html,
         "Format": "FixedPrice",
         "Duration": "GTC",
         "Buy It Now price": price,
-        "Best Offer Enabled": "0",
         "Immediate pay required": "1",
         "Location": DEFAULT_LOCATION,
         "Shipping service 1 option": "USPSGroundAdvantage",
@@ -290,8 +294,8 @@ def ebay_row_from_analysis(a: Dict[str, Any], idx: int, photos_per_item: int, co
         "C:Color": color,
         "C:Material": material,
         "C:Size": size,
-        "C:Features": features if isinstance(features, str) else json.dumps(features),
         "C:Pattern": pattern,
+        "C:Features": features if isinstance(features, str) else json.dumps(features),
         "C:Vintage": "No",
     }
 
@@ -317,13 +321,12 @@ def export_csv():
         out = io.StringIO()
         w = csv.DictWriter(out, fieldnames=FIELDNAMES, extrasaction="ignore")
         w.writeheader()
-        for r_ in rows: w.writerow(r_)
+        for row in rows: w.writerow(row)
         out.seek(0)
         fname = f"ebay-listings-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}.csv"
-        return send_file(io.BytesIO(out.getvalue().encode("utf-8")),
-                         mimetype="text/csv", as_attachment=True, download_name=fname)
+        return send_file(io.BytesIO(out.getvalue().encode()), mimetype="text/csv", as_attachment=True, download_name=fname)
     except Exception:
-        return jsonify({"error": "CSV export failed", "trace": traceback.format_exc()}), 500
+        return jsonify({"error": traceback.format_exc()}), 500
 
 @app.route("/preview_csv")
 def preview_csv():
@@ -333,19 +336,14 @@ def preview_csv():
         photos_per_item = int(request.args.get("photos_per_item", DEFAULT_PHOTOS_PER_ITEM))
         condition = normalize_condition(request.args.get("condition", DEFAULT_CONDITION))
         rows = _analyze_then_rows(2, photos_per_item, condition)
-        return jsonify({
-            "preview_count": len(rows),
-            "photos_per_item": photos_per_item,
-            "condition": condition,
-            "rows": rows
-        }), 200
+        return jsonify({"preview_count": len(rows), "rows": rows}), 200
     except Exception:
         return jsonify({"error": traceback.format_exc()}), 500
 
 # ──────────────────────────────────────────────────────────────
-# Entry point
+# Run
 # ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
-    print(f"🚀 Chatbay Analyzer v4.6 running on port {port}")
+    print(f"🚀 Chatbay Analyzer v4.7 running on port {port}")
     app.run(host="0.0.0.0", port=port, debug=False)
