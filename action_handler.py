@@ -1,23 +1,17 @@
 # ──────────────────────────────────────────────────────────────
-# Chatbay → GPT-4o Vision Analyzer + eBay CSV Exporter (v5.1-T)
+# Chatbay → GPT-4o Vision Analyzer + eBay CSV Exporter (v5.1-T2)
 # Flask app for Render.com deployment
 # Category-based template auto-loader (from /app/templates/)
-# Full header sync; blanks preserved; Start price only
+# Full header sync; blanks preserved; Start price only; photo sanitization
 # ──────────────────────────────────────────────────────────────
-import os, io, csv, json, time, datetime, traceback, requests
+import os, io, csv, json, time, datetime, traceback, requests, urllib.parse
 from typing import Dict, Any, List, Optional, Tuple
 from flask import Flask, jsonify, send_file, request
 from openai import OpenAI
 
-# ──────────────────────────────────────────────────────────────
-# App + OpenAI client
-# ──────────────────────────────────────────────────────────────
 app = Flask(__name__)
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# ──────────────────────────────────────────────────────────────
-# Env helpers
-# ──────────────────────────────────────────────────────────────
 def getenv_float(key: str, default: float) -> float:
     try:
         return float(os.getenv(key, str(default)).strip())
@@ -33,9 +27,7 @@ def getenv_int(key: str, default: int) -> int:
 def getenv_str(key: str, default: str) -> str:
     return str(os.getenv(key, default)).strip()
 
-# ──────────────────────────────────────────────────────────────
 # Core config
-# ──────────────────────────────────────────────────────────────
 DEFAULT_PHOTOS_PER_ITEM = getenv_int("DEFAULT_PHOTOS_PER_ITEM", 4)
 DEFAULT_CONDITION       = getenv_str("DEFAULT_CONDITION", "preowned").lower()
 GALLERY_URL             = getenv_str("CHATBAY_GALLERY_URL", "https://chatbay.site/wp-json/chatbay/v1/gallery")
@@ -48,9 +40,6 @@ DEFAULT_PAY_PROFILE     = getenv_str("EBAY_PAY_PROFILE", "eBay Payments")
 SLEEP_BETWEEN_ITEMS     = getenv_float("BATCH_SLEEP", 6.0)
 MAX_RETRIES             = getenv_int("MAX_RETRIES", 5)
 
-# ──────────────────────────────────────────────────────────────
-# eBay Category Map + Helpers
-# ──────────────────────────────────────────────────────────────
 CATEGORY_MAP = {
     "panties": "11507", "underwear": "11507", "lingerie": "11514",
     "t-shirt": "15687", "shirt": "15687",
@@ -105,9 +94,34 @@ def build_title(brand, title_raw, size, color) -> str:
     parts = [p for p in [brand, title_raw, size, color] if p]
     return limit_len(" ".join(parts).strip(), 79)
 
-# ──────────────────────────────────────────────────────────────
-# Template header loader (category based)
-# ──────────────────────────────────────────────────────────────
+# --- new helper: photo URL sanitization
+def sanitize_photo_url(u: str) -> str:
+    u = u.strip()
+    if not u:
+        return u
+    if u.startswith("http://"):
+        u = "https://" + u[len("http://"):]
+    parts = urllib.parse.urlsplit(u)
+    path  = urllib.parse.quote(parts.path, safe="/._-")
+    return urllib.parse.urlunsplit(("https", parts.netloc, path, "", ""))
+
+def join_item_photos(urls: List[str], max_photos: int) -> str:
+    cleaned = []
+    for u in urls:
+        cu = sanitize_photo_url(u)
+        if cu.lower().endswith((".jpg", ".jpeg", ".png")):
+            cleaned.append(cu)
+    seen = set()
+    out = []
+    for cu in cleaned:
+        if cu not in seen:
+            seen.add(cu)
+            out.append(cu)
+        if len(out) >= max(1, min(12, int(max_photos))):
+            break
+    return ",".join(out)
+
+# Template loader and caching
 _HEADER_CACHE: Dict[str, List[str]] = {}
 
 def template_for_category(cat_text: str) -> str:
@@ -115,7 +129,6 @@ def template_for_category(cat_text: str) -> str:
     for key in CATEGORY_MAP.keys():
         if key in lower:
             return f"/app/templates/eBay-category-listing-template-{key}.csv"
-    # Fallback template
     return "/app/templates/eBay-category-listing-template-panties.csv"
 
 def load_fieldnames(template_path: str) -> List[str]:
@@ -128,21 +141,15 @@ def load_fieldnames(template_path: str) -> List[str]:
             _HEADER_CACHE[template_path] = [h.strip() for h in headers]
             return _HEADER_CACHE[template_path]
     except Exception:
-        # Minimal fallback if template file is missing/unreadable
         _HEADER_CACHE[template_path] = [
             "Action(SiteID=US|Country=US|Currency=USD|Version=1193)",
             "Custom label (SKU)", "Category ID", "Category name", "Title",
             "Start price", "Quantity", "Item photo URL", "Condition ID",
             "Description", "Format", "Duration",
-            "Shipping profile name", "Return profile name", "Payment profile name",
-            "Location", "Schedule Time",
-            "C:Brand", "C:Color", "C:Material", "C:Size", "C:Pattern", "C:Features"
+            "Shipping profile name", "Return profile name", "Payment profile name"
         ]
         return _HEADER_CACHE[template_path]
 
-# ──────────────────────────────────────────────────────────────
-# GPT Analyzer with retry/backoff
-# ──────────────────────────────────────────────────────────────
 def analyze_photos_with_gpt(photo_urls: List[str]) -> Dict[str, Any]:
     payload = {
         "model": "gpt-4o-mini",
@@ -162,37 +169,28 @@ def analyze_photos_with_gpt(photo_urls: List[str]) -> Dict[str, Any]:
         try:
             resp = client.chat.completions.create(**payload)
             raw = resp.choices[0].message.content.strip()
-            try:
-                parsed = json.loads(raw) if raw.startswith("{") else {"raw": raw}
-            except Exception:
-                parsed = {"raw": raw}
+            parsed = json.loads(raw) if raw.startswith("{") else {"raw": raw}
             parsed["photos"] = photo_urls
             return parsed
         except Exception as e:
             msg = str(e)
-            # Backoff on rate limits/timeouts
-            if "429" in msg or "Rate limit" in msg or "timeout" in msg.lower():
-                wait = max(2.0, SLEEP_BETWEEN_ITEMS) * attempt
+            if "429" in msg or "Rate limit" in msg:
+                wait = SLEEP_BETWEEN_ITEMS * attempt
                 time.sleep(wait)
                 continue
-            # Non-retryable
             return {"error": msg, "photos": photo_urls}
     return {"error": "Failed after retries", "photos": photo_urls}
 
-# ──────────────────────────────────────────────────────────────
-# Row builder (uses category template; Start price only)
-# ──────────────────────────────────────────────────────────────
 def build_row_from_analysis(a: Dict[str, Any], idx: int, photos_per_item: int, condition: str) -> Tuple[Dict[str, str], str]:
-    """Return (row_dict, template_path_used)"""
     category_text = a.get("category", "other")
     template_path = template_for_category(category_text)
     headers = load_fieldnames(template_path)
     row = {h: "" for h in headers}
 
     title_raw = (a.get("title") or f"Item {idx}").strip()
-    desc_raw = (a.get("description") or "Collectible item.").strip()
-    cat_id = match_category_id(category_text)
-    price = clean_price(a.get("price_estimate", "34.99"))
+    desc_raw  = (a.get("description") or "Collectible item.").strip()
+    cat_id     = match_category_id(category_text)
+    price      = clean_price(a.get("price_estimate", "34.99"))
 
     brand    = (a.get("brand") or "").strip()
     color    = (a.get("color") or "").strip()
@@ -204,7 +202,7 @@ def build_row_from_analysis(a: Dict[str, Any], idx: int, photos_per_item: int, c
     title   = build_title(brand, title_raw, size, color)
     cond_id = CONDITION_ID_MAP.get(normalize_condition(condition), 3000)
     photos  = a.get("photos") or []
-    item_photo_url = ",".join(photos[:max(1, min(12, int(photos_per_item)))])
+    item_photo_url = join_item_photos(photos, photos_per_item)
 
     desc_html = f"""
 <p><center><h4>{title}</h4></center></p>
@@ -222,7 +220,6 @@ def build_row_from_analysis(a: Dict[str, Any], idx: int, photos_per_item: int, c
         if col in row:
             row[col] = str(val)
 
-    # Core required cols
     setcol("Action(SiteID=US|Country=US|Currency=USD|Version=1193)", "Add")
     setcol("Custom label (SKU)", "")
     setcol("Category ID", cat_id)
@@ -231,24 +228,21 @@ def build_row_from_analysis(a: Dict[str, Any], idx: int, photos_per_item: int, c
     setcol("Schedule Time", current_gmt_schedule())
     setcol("Location", DEFAULT_LOCATION)
 
-    # Price policy: ONLY Start price, even for FixedPrice
+    # Price logic: Start price only
     setcol("Start price", price)
-    setcol("Buy It Now price", "")  # explicitly blank
+    setcol("Buy It Now price", "")            # blank intentionally
 
     setcol("Quantity", "1")
     setcol("Item photo URL", item_photo_url)
     setcol("Condition ID", str(cond_id))
     setcol("Description", desc_html)
+    setcol("Format", getenv_str("EBAY_FORMAT", "FixedPrice"))
+    setcol("Duration", getenv_str("EBAY_DURATION", "GTC"))
 
-    setcol("Format", "FixedPrice")
-    setcol("Duration", "GTC")
-
-    # Business policies / profiles (if columns exist)
     setcol("Shipping profile name", DEFAULT_SHIP_PROFILE)
     setcol("Return profile name", DEFAULT_RET_PROFILE)
     setcol("Payment profile name", DEFAULT_PAY_PROFILE)
 
-    # Item specifics
     setcol("C:Brand", brand)
     setcol("C:Color", color)
     setcol("C:Material", material)
@@ -258,36 +252,27 @@ def build_row_from_analysis(a: Dict[str, Any], idx: int, photos_per_item: int, c
 
     return row, template_path
 
-# ──────────────────────────────────────────────────────────────
-# Helpers
-# ──────────────────────────────────────────────────────────────
-def get_gallery_url() -> str:
-    return request.args.get("gallery", GALLERY_URL)
-
 def analyze_then_rows(limit: Optional[int], photos_per_item: int, condition: str) -> Tuple[List[Dict[str, str]], List[str]]:
-    """Returns (rows, template_paths_used)"""
-    # Pull groups
     r = requests.get(get_gallery_url(), timeout=30)
     if r.status_code != 200:
         raise RuntimeError(f"Gallery fetch failed: {r.status_code}")
     payload = r.json() or {}
-    groups = payload.get("groups", [])
+    groups  = payload.get("groups", [])
     if not groups:
         return [], []
 
-    rows: List[Dict[str, str]] = []
-    used_templates: List[str] = []
+    rows:           List[Dict[str, str]] = []
+    used_templates: List[str]             = []
 
     for i, g in enumerate(groups, start=1):
         photos = [u.strip() for u in str(g.get("photo_urls", "")).split(",") if u.strip()]
         if not photos:
             continue
-        analysis = analyze_photos_with_gpt(photos)
+        analysis, _ = analyze_photos_with_gpt(photos), ""
         row, tpath = build_row_from_analysis(analysis, i, photos_per_item, condition)
         rows.append(row)
         used_templates.append(tpath)
         time.sleep(SLEEP_BETWEEN_ITEMS)
-
         if isinstance(limit, int) and len(rows) >= limit:
             break
 
@@ -301,21 +286,18 @@ def union_headers(template_paths: List[str]) -> List[str]:
                 headers.append(h)
     return headers
 
-# ──────────────────────────────────────────────────────────────
-# Routes
-# ──────────────────────────────────────────────────────────────
 @app.route("/health")
 def health():
-    return jsonify({"ok": True, "service": "chatbay-analyzer", "version": "v5.1-T"}), 200
+    return jsonify({"ok": True, "service": "chatbay-analyzer", "version": "v5.1-T2"}), 200
 
 @app.route("/analyze_gallery")
 def analyze_gallery():
     try:
-        r = requests.get(get_gallery_url(), timeout=30)
+        r       = requests.get(get_gallery_url(), timeout=30)
         if r.status_code != 200:
             return jsonify({"error": "Gallery fetch failed"}), r.status_code
         payload = r.json() or {}
-        groups = payload.get("groups", [])
+        groups  = payload.get("groups", [])
         if not groups:
             return jsonify({"error": "No groups found"}), 404
 
@@ -328,6 +310,7 @@ def analyze_gallery():
             results.append(parsed)
             time.sleep(SLEEP_BETWEEN_ITEMS)
         return jsonify(results), 200
+
     except Exception:
         return jsonify({"error": traceback.format_exc()}), 500
 
@@ -335,9 +318,9 @@ def analyze_gallery():
 def preview_csv():
     try:
         photos_per_item = int(request.args.get("photos_per_item", DEFAULT_PHOTOS_PER_ITEM))
-        condition = normalize_condition(request.args.get("condition", DEFAULT_CONDITION))
-        rows, tpaths = analyze_then_rows(2, photos_per_item, condition)
-        return jsonify({"preview_count": len(rows), "rows": rows, "templates": tpaths}), 200
+        condition      = normalize_condition(request.args.get("condition", DEFAULT_CONDITION))
+        rows, tpaths    = analyze_then_rows(2, photos_per_item, condition)
+        return jsonify({"preview_count": len(rows), "rows": rows, "templates_used": tpaths}), 200
     except Exception:
         return jsonify({"error": traceback.format_exc()}), 500
 
@@ -345,20 +328,17 @@ def preview_csv():
 def export_csv():
     try:
         photos_per_item = int(request.args.get("photos_per_item", DEFAULT_PHOTOS_PER_ITEM))
-        condition = normalize_condition(request.args.get("condition", DEFAULT_CONDITION))
-
+        condition      = normalize_condition(request.args.get("condition", DEFAULT_CONDITION))
         rows, template_paths = analyze_then_rows(None, photos_per_item, condition)
+
         if not rows:
             return jsonify({"error": "No rows generated"}), 400
 
-        # Union header across all templates used in this batch
         headers = union_headers(template_paths)
-
-        out = io.StringIO()
-        writer = csv.DictWriter(out, fieldnames=headers, extrasaction="ignore")
+        out     = io.StringIO()
+        writer  = csv.DictWriter(out, fieldnames=headers, extrasaction="ignore")
         writer.writeheader()
         for row in rows:
-            # ensure blank placeholders exist
             for h in headers:
                 if h not in row:
                     row[h] = ""
@@ -372,13 +352,11 @@ def export_csv():
             as_attachment=True,
             download_name=fname
         )
+
     except Exception:
         return jsonify({"error": traceback.format_exc()}), 500
 
-# ──────────────────────────────────────────────────────────────
-# Entrypoint
-# ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
-    print(f"🚀 Chatbay Analyzer v5.1-T running on port {port}")
+    print(f"🚀 Chatbay Analyzer v5.1-T2 running on port {port}")
     app.run(host="0.0.0.0", port=port, debug=False)
