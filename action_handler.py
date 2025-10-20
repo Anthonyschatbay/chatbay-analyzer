@@ -2,10 +2,10 @@
 # Chatbay → GPT-4o Vision Analyzer + eBay CSV Exporter (v5.1-T)
 # Flask app for Render.com deployment
 # Category-based template auto-loader (from /app/templates/)
-# Full header sync; blanks preserved
+# Full header sync; blanks preserved; Start price only
 # ──────────────────────────────────────────────────────────────
 import os, io, csv, json, time, datetime, traceback, requests
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from flask import Flask, jsonify, send_file, request
 from openai import OpenAI
 
@@ -115,7 +115,8 @@ def template_for_category(cat_text: str) -> str:
     for key in CATEGORY_MAP.keys():
         if key in lower:
             return f"/app/templates/eBay-category-listing-template-{key}.csv"
-    return "/app/templates/eBay-category-listing-template-panties.csv"  # fallback
+    # Fallback template
+    return "/app/templates/eBay-category-listing-template-panties.csv"
 
 def load_fieldnames(template_path: str) -> List[str]:
     if template_path in _HEADER_CACHE:
@@ -125,16 +126,17 @@ def load_fieldnames(template_path: str) -> List[str]:
             reader = csv.reader(f)
             headers = next(reader)
             _HEADER_CACHE[template_path] = [h.strip() for h in headers]
-            print(f"🧾 Loaded template: {template_path} ({len(headers)} cols)")
             return _HEADER_CACHE[template_path]
-    except Exception as e:
-        print(f"⚠️ Failed to load template {template_path}: {e}")
+    except Exception:
+        # Minimal fallback if template file is missing/unreadable
         _HEADER_CACHE[template_path] = [
             "Action(SiteID=US|Country=US|Currency=USD|Version=1193)",
             "Custom label (SKU)", "Category ID", "Category name", "Title",
             "Start price", "Quantity", "Item photo URL", "Condition ID",
-            "Description", "Format", "Duration", "Buy It Now price",
-            "Shipping profile name", "Return profile name", "Payment profile name"
+            "Description", "Format", "Duration",
+            "Shipping profile name", "Return profile name", "Payment profile name",
+            "Location", "Schedule Time",
+            "C:Brand", "C:Color", "C:Material", "C:Size", "C:Pattern", "C:Features"
         ]
         return _HEADER_CACHE[template_path]
 
@@ -160,24 +162,28 @@ def analyze_photos_with_gpt(photo_urls: List[str]) -> Dict[str, Any]:
         try:
             resp = client.chat.completions.create(**payload)
             raw = resp.choices[0].message.content.strip()
-            parsed = json.loads(raw) if raw.startswith("{") else {"raw": raw}
+            try:
+                parsed = json.loads(raw) if raw.startswith("{") else {"raw": raw}
+            except Exception:
+                parsed = {"raw": raw}
             parsed["photos"] = photo_urls
             return parsed
         except Exception as e:
             msg = str(e)
-            if "429" in msg or "Rate limit" in msg:
-                wait = SLEEP_BETWEEN_ITEMS * attempt
-                print(f"⏳ Rate-limit retry {attempt}/{MAX_RETRIES} after {wait:.1f}s")
+            # Backoff on rate limits/timeouts
+            if "429" in msg or "Rate limit" in msg or "timeout" in msg.lower():
+                wait = max(2.0, SLEEP_BETWEEN_ITEMS) * attempt
                 time.sleep(wait)
                 continue
-            print(f"❌ GPT error: {msg}")
+            # Non-retryable
             return {"error": msg, "photos": photo_urls}
     return {"error": "Failed after retries", "photos": photo_urls}
 
 # ──────────────────────────────────────────────────────────────
-# Row builder
+# Row builder (uses category template; Start price only)
 # ──────────────────────────────────────────────────────────────
-def ebay_row_from_analysis(a: Dict[str, Any], idx: int, photos_per_item: int, condition: str) -> Dict[str, str]:
+def build_row_from_analysis(a: Dict[str, Any], idx: int, photos_per_item: int, condition: str) -> Tuple[Dict[str, str], str]:
+    """Return (row_dict, template_path_used)"""
     category_text = a.get("category", "other")
     template_path = template_for_category(category_text)
     headers = load_fieldnames(template_path)
@@ -188,16 +194,16 @@ def ebay_row_from_analysis(a: Dict[str, Any], idx: int, photos_per_item: int, co
     cat_id = match_category_id(category_text)
     price = clean_price(a.get("price_estimate", "34.99"))
 
-    brand = (a.get("brand") or "").strip()
-    color = (a.get("color") or "").strip()
+    brand    = (a.get("brand") or "").strip()
+    color    = (a.get("color") or "").strip()
     material = (a.get("material") or "").strip()
-    size = (a.get("size") or "").strip()
+    size     = (a.get("size") or "").strip()
     features = a.get("features", "")
-    pattern = (a.get("pattern") or "").strip()
+    pattern  = (a.get("pattern") or "").strip()
 
-    title = build_title(brand, title_raw, size, color)
+    title   = build_title(brand, title_raw, size, color)
     cond_id = CONDITION_ID_MAP.get(normalize_condition(condition), 3000)
-    photos = a.get("photos") or []
+    photos  = a.get("photos") or []
     item_photo_url = ",".join(photos[:max(1, min(12, int(photos_per_item)))])
 
     desc_html = f"""
@@ -216,53 +222,91 @@ def ebay_row_from_analysis(a: Dict[str, Any], idx: int, photos_per_item: int, co
         if col in row:
             row[col] = str(val)
 
+    # Core required cols
     setcol("Action(SiteID=US|Country=US|Currency=USD|Version=1193)", "Add")
     setcol("Custom label (SKU)", "")
     setcol("Category ID", cat_id)
     setcol("Category name", category_text)
     setcol("Title", title)
+    setcol("Schedule Time", current_gmt_schedule())
+    setcol("Location", DEFAULT_LOCATION)
+
+    # Price policy: ONLY Start price, even for FixedPrice
     setcol("Start price", price)
+    setcol("Buy It Now price", "")  # explicitly blank
+
     setcol("Quantity", "1")
     setcol("Item photo URL", item_photo_url)
     setcol("Condition ID", str(cond_id))
     setcol("Description", desc_html)
+
     setcol("Format", "FixedPrice")
     setcol("Duration", "GTC")
-    setcol("Buy It Now price", price)
+
+    # Business policies / profiles (if columns exist)
     setcol("Shipping profile name", DEFAULT_SHIP_PROFILE)
     setcol("Return profile name", DEFAULT_RET_PROFILE)
     setcol("Payment profile name", DEFAULT_PAY_PROFILE)
 
-    # specifics
+    # Item specifics
     setcol("C:Brand", brand)
     setcol("C:Color", color)
     setcol("C:Material", material)
     setcol("C:Size", size)
     setcol("C:Pattern", pattern)
-    setcol("C:Features", features)
-    return row
+    setcol("C:Features", features if isinstance(features, str) else json.dumps(features))
+
+    return row, template_path
 
 # ──────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────
-def get_gallery_url():
+def get_gallery_url() -> str:
     return request.args.get("gallery", GALLERY_URL)
 
-def _analyze_then_rows(limit: Optional[int], photos_per_item: int, condition: str):
-    r = requests.get(f"{request.host_url}analyze_gallery", params={"gallery": get_gallery_url()})
+def analyze_then_rows(limit: Optional[int], photos_per_item: int, condition: str) -> Tuple[List[Dict[str, str]], List[str]]:
+    """Returns (rows, template_paths_used)"""
+    # Pull groups
+    r = requests.get(get_gallery_url(), timeout=30)
     if r.status_code != 200:
-        raise RuntimeError(f"Analyzer failed: {r.status_code}")
-    data = r.json()
-    if isinstance(limit, int):
-        data = data[:limit]
-    return [ebay_row_from_analysis(a, i + 1, photos_per_item, condition) for i, a in enumerate(data)]
+        raise RuntimeError(f"Gallery fetch failed: {r.status_code}")
+    payload = r.json() or {}
+    groups = payload.get("groups", [])
+    if not groups:
+        return [], []
+
+    rows: List[Dict[str, str]] = []
+    used_templates: List[str] = []
+
+    for i, g in enumerate(groups, start=1):
+        photos = [u.strip() for u in str(g.get("photo_urls", "")).split(",") if u.strip()]
+        if not photos:
+            continue
+        analysis = analyze_photos_with_gpt(photos)
+        row, tpath = build_row_from_analysis(analysis, i, photos_per_item, condition)
+        rows.append(row)
+        used_templates.append(tpath)
+        time.sleep(SLEEP_BETWEEN_ITEMS)
+
+        if isinstance(limit, int) and len(rows) >= limit:
+            break
+
+    return rows, used_templates
+
+def union_headers(template_paths: List[str]) -> List[str]:
+    headers: List[str] = []
+    for path in template_paths:
+        for h in load_fieldnames(path):
+            if h not in headers:
+                headers.append(h)
+    return headers
 
 # ──────────────────────────────────────────────────────────────
 # Routes
 # ──────────────────────────────────────────────────────────────
 @app.route("/health")
 def health():
-    return jsonify({"ok": True, "service": "chatbay-analyzer"}), 200
+    return jsonify({"ok": True, "service": "chatbay-analyzer", "version": "v5.1-T"}), 200
 
 @app.route("/analyze_gallery")
 def analyze_gallery():
@@ -280,12 +324,20 @@ def analyze_gallery():
             photos = [u.strip() for u in str(g.get("photo_urls", "")).split(",") if u.strip()]
             if not photos:
                 continue
-            print(f"🧠 Analyzing group {i}/{len(groups)}")
             parsed = analyze_photos_with_gpt(photos)
             results.append(parsed)
             time.sleep(SLEEP_BETWEEN_ITEMS)
-        print(f"🏁 Completed {len(results)} groups.")
         return jsonify(results), 200
+    except Exception:
+        return jsonify({"error": traceback.format_exc()}), 500
+
+@app.route("/preview_csv")
+def preview_csv():
+    try:
+        photos_per_item = int(request.args.get("photos_per_item", DEFAULT_PHOTOS_PER_ITEM))
+        condition = normalize_condition(request.args.get("condition", DEFAULT_CONDITION))
+        rows, tpaths = analyze_then_rows(2, photos_per_item, condition)
+        return jsonify({"preview_count": len(rows), "rows": rows, "templates": tpaths}), 200
     except Exception:
         return jsonify({"error": traceback.format_exc()}), 500
 
@@ -294,31 +346,32 @@ def export_csv():
     try:
         photos_per_item = int(request.args.get("photos_per_item", DEFAULT_PHOTOS_PER_ITEM))
         condition = normalize_condition(request.args.get("condition", DEFAULT_CONDITION))
-        rows = _analyze_then_rows(None, photos_per_item, condition)
 
-        # Collect all headers across all categories used in batch
-        template_paths = {template_for_category(a.get("category", "")) for a in rows}
-        headers: List[str] = []
-        for path in template_paths:
-            for h in load_fieldnames(path):
-                if h not in headers:
-                    headers.append(h)
+        rows, template_paths = analyze_then_rows(None, photos_per_item, condition)
+        if not rows:
+            return jsonify({"error": "No rows generated"}), 400
+
+        # Union header across all templates used in this batch
+        headers = union_headers(template_paths)
 
         out = io.StringIO()
-        w = csv.DictWriter(out, fieldnames=headers, extrasaction="ignore")
-        w.writeheader()
+        writer = csv.DictWriter(out, fieldnames=headers, extrasaction="ignore")
+        writer.writeheader()
         for row in rows:
+            # ensure blank placeholders exist
             for h in headers:
                 if h not in row:
                     row[h] = ""
-            w.writerow(row)
+            writer.writerow(row)
 
         out.seek(0)
         fname = f"ebay-listings-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}.csv"
-        return send_file(io.BytesIO(out.getvalue().encode()),
-                         mimetype="text/csv",
-                         as_attachment=True,
-                         download_name=fname)
+        return send_file(
+            io.BytesIO(out.getvalue().encode()),
+            mimetype="text/csv",
+            as_attachment=True,
+            download_name=fname
+        )
     except Exception:
         return jsonify({"error": traceback.format_exc()}), 500
 
