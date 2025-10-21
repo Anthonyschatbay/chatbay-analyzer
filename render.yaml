@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: chatbay-analyzer
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --timeout 120 --workers 2
+    healthCheckPath: /health
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false         # set in Render dashboard
+      - key: CHATBAY_GALLERY_URL
+        value: https://chatbay.site/wp-json/chatbay/v1/gallery
+      - key: DEFAULT_CONDITION
+        value: preowned
+      - key: DEFAULT_PHOTOS_PER_ITEM
+        value: "4"
+      - key: EBAY_UPLOADS_URL
+        value: https://chatbay.site/ebay-media
+      - key: EBAY_LOCATION
+        value: "Middletown, CT, USA"
+      - key: EBAY_SHIP_PROFILE
+        value: "ADV FREE 2 DAYS"
+      - key: EBAY_RET_PROFILE
+        value: "No returns accepted"
+      - key: EBAY_PAY_PROFILE
+        value: "eBay Payments"
+      - key: PORT
+        value: "10000"
