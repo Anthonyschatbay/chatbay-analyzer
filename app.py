@@ -283,15 +283,22 @@ def row_from_item(analyzed: Dict[str, Any], photos: List[str], condition: str) -
     price = fetch_median_sold_price(title or analyzed.get("brand", ""), category_id) or 34.99
     photo_pipe = pipe_join(photos)
 
-    return [
+    row = [
         "Add","",category_id,"",title,"","",schedule_time_next_day_22_gmt(),"","",
         f"{price:.2f}","1",photo_pipe,"",str(CONDITION_ID_MAP.get(condition, 3000)),
         desc_html,"FixedPrice","GTC","","","","","",DEFAULT_LOCATION,"","","","","","","2",
         "","","","","",DEFAULT_SHIP_PROFILE,DEFAULT_RET_PROFILE,DEFAULT_PAY_PROFILE,"","",
-        analyzed.get("year_or_style",""), analyzed.get("brand",""),"", analyzed.get("color",""),
-        "", analyzed.get("size",""), analyzed.get("category_guess",""),"", "", "",
-        analyzed.get("material",""),"", "", "Yes" if "90" in analyzed.get("year_or_style","").lower() or "y2k" in analyzed.get("year_or_style","").lower() else ""
+        analyzed.get("year_or_style",""), analyzed.get("brand",""),"",
+        analyzed.get("color",""),"", analyzed.get("size",""),
+        analyzed.get("category_guess",""),"","","",
+        analyzed.get("material",""),"","","Yes" if "90" in analyzed.get("year_or_style","").lower() or "y2k" in analyzed.get("year_or_style","").lower() else ""
     ]
+
+    # ✅ pad to match full header length
+    if len(row) < len(FULL_HEADERS):
+        row += [""] * (len(FULL_HEADERS) - len(row))
+
+    return row[:len(FULL_HEADERS)]  # ensures row never exceeds headers
 
 # ──────────────────────────────────────────────────────────────
 # Routes
