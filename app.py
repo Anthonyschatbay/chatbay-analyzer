@@ -78,6 +78,22 @@ def join_item_photos(urls, max_photos):
     return ",".join(out)
 
 # ──────────────────────────────────────────────────────────────
+# Fetch WordPress gallery
+def fetch_gallery():
+    try:
+        resp = requests.get(GALLERY_URL, timeout=10)
+        data = resp.json()
+        if "groups" in data and data["groups"]:
+            print(f"✅ Gallery fetched successfully: {len(data['groups'])} groups")
+            return data["groups"]
+        else:
+            print("⚠️ No gallery groups found:", data)
+            return []
+    except Exception as e:
+        print("❌ Error fetching gallery:", e)
+        return []
+
+# ──────────────────────────────────────────────────────────────
 @app.route("/health")
 def health():
     return jsonify({"ok": True, "service": "chatbay-analyzer", "version": "v5.3", "source": "Render/Hostinger"})
@@ -91,64 +107,59 @@ def serve_openapi():
 @app.route("/gallery")
 def get_gallery():
     """Proxy to chatbay.site/wp-json/chatbay/v1/gallery"""
-    try:
-        resp = requests.get(GALLERY_URL, timeout=10)
-        if resp.status_code == 200:
-            return jsonify(resp.json())
-        return jsonify({"error": f"Failed to fetch gallery ({resp.status_code})"}), 500
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    groups = fetch_gallery()
+    return jsonify({"total_groups": len(groups), "groups": groups})
 
 # ──────────────────────────────────────────────────────────────
 @app.route("/preview_csv")
 def preview_csv():
-    """Preview first 2 CSV rows with sample analysis output"""
+    """Preview first 2 CSV rows with live gallery data"""
     condition = request.args.get("condition", DEFAULT_CONDITION)
     photos_per_item = int(request.args.get("photos_per_item", DEFAULT_PHOTOS_PER_ITEM))
+    groups = fetch_gallery()
+
+    if not groups:
+        return jsonify({"error": "No gallery data found"}), 500
+
+    preview_rows = []
+    for idx, group in enumerate(groups[:2]):
+        photos = [p.strip() for p in group["photo_urls"].split(",") if p.strip()]
+        photo_str = join_item_photos(photos, photos_per_item)
+        title = f"Listing {idx+1}"
+        preview_rows.append({
+            "Title": title,
+            "Category ID": "15687",
+            "Start price": "34.99",
+            "Condition ID": CONDITION_ID_MAP.get(condition, 3000),
+            "Item photo URL": photo_str,
+            "Format": "FixedPrice",
+            "Duration": "GTC",
+            "Shipping profile name": DEFAULT_SHIP_PROFILE,
+            "Return profile name": DEFAULT_RET_PROFILE,
+            "Payment profile name": DEFAULT_PAY_PROFILE
+        })
 
     preview = {
-        "preview_count": 2,
+        "preview_count": len(preview_rows),
         "photos_per_item": photos_per_item,
         "condition": condition,
-        "rows": [
-            {
-                "Title": "Vintage Levi's 501 Jeans Blue 34x32",
-                "Category ID": "11483",
-                "Start price": "64.99",
-                "Condition ID": CONDITION_ID_MAP.get(condition, 3000),
-                "Item photo URL": "https://chatbay.site/ebay-media/sample1.jpg,https://chatbay.site/ebay-media/sample2.jpg",
-                "Format": "FixedPrice",
-                "Duration": "GTC",
-                "Shipping profile name": DEFAULT_SHIP_PROFILE,
-                "Return profile name": DEFAULT_RET_PROFILE,
-                "Payment profile name": DEFAULT_PAY_PROFILE
-            },
-            {
-                "Title": "Vintage Nike Windbreaker Jacket Red Medium",
-                "Category ID": "57988",
-                "Start price": "74.99",
-                "Condition ID": CONDITION_ID_MAP.get(condition, 3000),
-                "Item photo URL": "https://chatbay.site/ebay-media/sample3.jpg,https://chatbay.site/ebay-media/sample4.jpg",
-                "Format": "FixedPrice",
-                "Duration": "GTC",
-                "Shipping profile name": DEFAULT_SHIP_PROFILE,
-                "Return profile name": DEFAULT_RET_PROFILE,
-                "Payment profile name": DEFAULT_PAY_PROFILE
-            }
-        ]
+        "rows": preview_rows
     }
     return jsonify(preview)
 
 # ──────────────────────────────────────────────────────────────
 @app.route("/export_csv")
 def export_csv():
-    """Generate full eBay-ready CSV for download"""
+    """Generate full eBay-ready CSV using live gallery data"""
     condition = request.args.get("condition", DEFAULT_CONDITION)
     photos_per_item = int(request.args.get("photos_per_item", DEFAULT_PHOTOS_PER_ITEM))
+    groups = fetch_gallery()
+
+    if not groups:
+        return jsonify({"error": "No gallery data found"}), 500
 
     output = io.StringIO()
     writer = csv.writer(output)
-
     writer.writerow([
         "Action(SiteID=US|Country=US|Currency=USD|Version=1193)",
         "Category ID", "Title", "Start price", "Quantity",
@@ -157,21 +168,18 @@ def export_csv():
         "Shipping profile name", "Return profile name", "Payment profile name"
     ])
 
-    listings = [
-        ["Add", "11483", "Vintage Levi's 501 Jeans Blue 34x32", "64.99", "1",
-         "https://chatbay.site/ebay-media/sample1.jpg,https://chatbay.site/ebay-media/sample2.jpg",
-         CONDITION_ID_MAP.get(condition, 3000),
-         "<p><center><h4>Vintage Levi's 501 Jeans Blue 34x32</h4></center></p><p>Classic 5-pocket denim with button fly.</p>",
-         "FixedPrice", "GTC", DEFAULT_SHIP_PROFILE, DEFAULT_RET_PROFILE, DEFAULT_PAY_PROFILE],
-        ["Add", "57988", "Vintage Nike Windbreaker Jacket Red Medium", "74.99", "1",
-         "https://chatbay.site/ebay-media/sample3.jpg,https://chatbay.site/ebay-media/sample4.jpg",
-         CONDITION_ID_MAP.get(condition, 3000),
-         "<p><center><h4>Vintage Nike Windbreaker Jacket Red Medium</h4></center></p><p>Retro windbreaker with mesh lining.</p>",
-         "FixedPrice", "GTC", DEFAULT_SHIP_PROFILE, DEFAULT_RET_PROFILE, DEFAULT_PAY_PROFILE]
-    ]
+    for idx, group in enumerate(groups):
+        photos = [p.strip() for p in group["photo_urls"].split(",") if p.strip()]
+        photo_str = join_item_photos(photos, photos_per_item)
+        title = f"Listing {idx+1}"
+        desc = f"<p><center><h4>{title}</h4></center></p><p>Auto-generated listing from Chatbay Analyzer.</p>"
 
-    for row in listings:
-        writer.writerow(row)
+        writer.writerow([
+            "Add", "15687", title, "34.99", "1", photo_str,
+            CONDITION_ID_MAP.get(condition, 3000),
+            desc, "FixedPrice", "GTC",
+            DEFAULT_SHIP_PROFILE, DEFAULT_RET_PROFILE, DEFAULT_PAY_PROFILE
+        ])
 
     csv_data = output.getvalue()
     output.close()
