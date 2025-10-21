@@ -1,22 +1,11 @@
+# app.py
 # ──────────────────────────────────────────────────────────────
-# Chatbay Analyzer → Flask + OpenAI Vision (v5.7 structured)
-# Generates verified, SEO-rich eBay CSVs using Vision + Category Map
-# Adds: Full CSV headers + median sold-price research (eBay Finding API)
+# Chatbay Analyzer → Flask + OpenAI Vision (v5.8)
+# Adds: multi-host allowlist, PNG support, public URL preflight, inline CSV
 # Routes:
-#   /health
-#   /openapi.json
-#   /gallery
-#   /preview_csv
-#   /export_csv
-# Env:
-#   OPENAI_API_KEY=...
-#   CHATBAY_GALLERY_URL=https://chatbay.site/wp-json/chatbay/v1/gallery
-#   EBAY_UPLOADS_URL=https://chatbay.site/ebay-media
-#   EBAY_LOCATION="Middletown, CT, USA"
-#   EBAY_SHIP_PROFILE="ADV FREE 2 DAYS"
-#   EBAY_RET_PROFILE="No returns accepted"
-#   EBAY_PAY_PROFILE="eBay Payments"
-#   EBAY_APP_ID=<your-ebay-appid>
+#   /health, /openapi.json, /gallery, /preview_csv, /export_csv, /export_csv_text
+# Env (additions):
+#   ALLOWED_HOSTS=chatbay.site,i.postimg.cc,cdn.chatbay.site
 # ──────────────────────────────────────────────────────────────
 
 import os
@@ -42,7 +31,7 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 SESSION = requests.Session()
 SESSION.headers.update({
-    "User-Agent": "ChatbayAnalyzer/5.7 (+https://chatbay-analyzer.onrender.com)"
+    "User-Agent": "ChatbayAnalyzer/5.8 (+https://chatbay-analyzer.onrender.com)"
 })
 REQUEST_TIMEOUT = (6.0, 30.0)
 
@@ -63,7 +52,10 @@ DEFAULT_CONDITION       = getenv_str("DEFAULT_CONDITION", "preowned").lower()
 
 GALLERY_URL             = getenv_str("CHATBAY_GALLERY_URL", "https://chatbay.site/wp-json/chatbay/v1/gallery")
 EBAY_UPLOADS_URL        = getenv_str("EBAY_UPLOADS_URL", "https://chatbay.site/ebay-media")
-LIMIT_HOST              = urllib.parse.urlsplit(EBAY_UPLOADS_URL).netloc.lower()
+
+# NEW: allow multiple image hosts (comma-separated)
+_default_host = urllib.parse.urlsplit(EBAY_UPLOADS_URL).netloc.lower()
+ALLOWED_HOSTS           = {h.strip().lower() for h in getenv_str("ALLOWED_HOSTS", _default_host).split(",") if h.strip()}
 
 DEFAULT_LOCATION        = getenv_str("EBAY_LOCATION", "Middletown, CT, USA")
 DEFAULT_SHIP_PROFILE    = getenv_str("EBAY_SHIP_PROFILE", "ADV FREE 2 DAYS")
@@ -88,7 +80,7 @@ CONDITION_ID_MAP = {"new": 1000, "preowned": 3000, "parts": 7000}
 
 # ──────────────────────────────────────────────────────────────
 # URL / Photo helpers
-ALLOWED_EXTS = (".jpg", ".jpeg")
+ALLOWED_EXTS = (".jpg", ".jpeg", ".png")
 
 def _httpsify(url: str) -> str:
     url = url.strip()
@@ -96,17 +88,29 @@ def _httpsify(url: str) -> str:
         url = "https://" + url[len("http://"):]
     return url
 
+def ensure_public(u: str) -> bool:
+    """HEAD check to confirm the URL is publicly reachable and is an image."""
+    try:
+        r = SESSION.head(u, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+        if r.status_code != 200:
+            return False
+        ctype = r.headers.get("Content-Type", "").lower()
+        return ctype.startswith("image/")
+    except Exception:
+        return False
+
 def sanitize_photo_url(u: str) -> Optional[str]:
     if not u:
         return None
     u = _httpsify(u)
     parts = urllib.parse.urlsplit(u)
-    if not parts.netloc or parts.netloc.lower() != LIMIT_HOST:
+    if not parts.netloc or parts.netloc.lower() not in ALLOWED_HOSTS:
         return None
     if not parts.path.lower().endswith(ALLOWED_EXTS):
         return None
     path = urllib.parse.quote(parts.path, safe="/._-")
-    return urllib.parse.urlunsplit(("https", parts.netloc, path, "", ""))
+    url = urllib.parse.urlunsplit(("https", parts.netloc, path, "", ""))
+    return url if ensure_public(url) else None
 
 def collect_item_photos(urls: List[str], max_photos: int) -> List[str]:
     cleaned, seen = [], set()
@@ -145,6 +149,9 @@ def analyze_images_with_vision(photo_urls: List[str], condition: str) -> Dict[st
     Returns JSON: {title, brand, color, size, material, category_guess, short_description}
     """
     try:
+        if not photo_urls:
+            print("⚠️ Vision skipped: no valid photo URLs after sanitization/preflight.")
+            return {}
         contents = [{
             "type": "text",
             "text": (
@@ -163,7 +170,7 @@ def analyze_images_with_vision(photo_urls: List[str], condition: str) -> Dict[st
             )
         }]
         for u in photo_urls:
-            contents.append({"type": "image_url", "image_url": {"url": sanitize_photo_url(u)}})
+            contents.append({"type": "image_url", "image_url": {"url": u}})
 
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -190,7 +197,7 @@ def clamp_title(t: str) -> str:
     return (t or "").strip()[:79]
 
 def pick_category_id(category_guess: str) -> str:
-    return CATEGORY_MAP.get(category_guess.strip().lower(), "15687") if category_guess else "15687"
+    return CATEGORY_MAP.get((category_guess or "").strip().lower(), "15687")
 
 # ──────────────────────────────────────────────────────────────
 # Pricing research
@@ -228,7 +235,8 @@ def fetch_median_sold_price(keywords: str, category_id: str) -> Optional[float]:
                     val = float(amt)
                     if 2 <= val <= 5000:
                         prices.append(val)
-                except: pass
+                except: 
+                    pass
         if not prices:
             return None
         prices.sort()
@@ -288,7 +296,7 @@ def row_from_item(analyzed: Dict[str, Any], photos: List[str], condition: str) -
 # ──────────────────────────────────────────────────────────────
 # Routes
 @app.route("/health")
-def health(): return jsonify({"ok": True, "version": "v5.7", "service": "chatbay-analyzer"})
+def health(): return jsonify({"ok": True, "version": "v5.8", "service": "chatbay-analyzer"})
 
 @app.route("/openapi.json")
 def serve_openapi():
@@ -316,13 +324,44 @@ def preview_csv():
             analyzed = analyze_images_with_vision(photos, condition)
             row = row_from_item(analyzed, photos, condition)
             preview.append({h: row[i] if i < len(row) else "" for i, h in enumerate(FULL_HEADERS)})
-        return jsonify({"preview_count": len(preview), "rows": preview})
+        return jsonify({"preview_count": len(preview), "photos_per_item": photos_per_item, "condition": condition, "rows": preview})
     except Exception as e:
         print("❌ Preview error:", e)
         return jsonify({"error": "preview failed"}), 500
 
 @app.route("/export_csv")
 def export_csv():
+    try:
+        condition = request.args.get("condition", DEFAULT_CONDITION).lower()
+        photos_per_item = int(request.args.get("photos_per_item", DEFAULT_PHOTOS_PER_ITEM))
+        inline = request.args.get("inline", "0") == "1"
+        groups = fetch_gallery_groups()
+        out = io.StringIO()
+        w = csv.writer(out, lineterminator="\n")
+        w.writerow(FULL_HEADERS)
+        for g in groups:
+            photos = collect_item_photos(g.get("photo_urls","").split(","), photos_per_item)
+            analyzed = analyze_images_with_vision(photos, condition)
+            w.writerow(row_from_item(analyzed, photos, condition))
+            time.sleep(SLEEP_BETWEEN_ITEMS)
+        csv_data = out.getvalue()
+        filename = f"chatbay-ebay-export-{datetime.datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.csv"
+
+        if inline:
+            return jsonify({"filename": filename, "csv_text": csv_data})
+
+        return Response(csv_data, headers={
+            "Content-Type": "text/csv; charset=utf-8",
+            "Content-Disposition": f"attachment; filename={filename}",
+            "Cache-Control": "no-store"
+        })
+    except Exception as e:
+        print("❌ Export error:", e)
+        return jsonify({"error": "export failed"}), 500
+
+@app.route("/export_csv_text")
+def export_csv_text():
+    """Explicit JSON (inline) CSV for Chat surfaces."""
     try:
         condition = request.args.get("condition", DEFAULT_CONDITION).lower()
         photos_per_item = int(request.args.get("photos_per_item", DEFAULT_PHOTOS_PER_ITEM))
@@ -337,17 +376,14 @@ def export_csv():
             time.sleep(SLEEP_BETWEEN_ITEMS)
         csv_data = out.getvalue()
         filename = f"chatbay-ebay-export-{datetime.datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.csv"
-        return Response(csv_data, headers={
-            "Content-Type": "text/csv; charset=utf-8",
-            "Content-Disposition": f"attachment; filename={filename}",
-            "Cache-Control": "no-store"
-        })
+        return jsonify({"filename": filename, "csv_text": csv_data})
     except Exception as e:
-        print("❌ Export error:", e)
+        print("❌ Export text error:", e)
         return jsonify({"error": "export failed"}), 500
 
 # ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))
-    print(f"🚀 Chatbay Analyzer v5.7 running on port {port}")
+    print(f"🚀 Chatbay Analyzer v5.8 running on port {port}")
     app.run(host="0.0.0.0", port=port, debug=False)
+

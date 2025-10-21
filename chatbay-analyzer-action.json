@@ -2,11 +2,9 @@
   "schema_version": "v1",
   "name_for_human": "Chatbay Analyzer",
   "name_for_model": "chatbay_analyzer",
-  "description_for_human": "Analyze grouped images from chatbay.site and export verified, SEO-rich eBay CSV listings (v4.3).",
-  "description_for_model": "Connects GPT-4o Vision to chatbay.site and Render backend to analyze product photos, identify item traits, and output verified eBay-compliant listings as CSV or JSON preview.",
-  "auth": {
-    "type": "none"
-  },
+  "description_for_human": "ONLY when I ask to analyze product photos or export an eBay CSV.",
+  "description_for_model": "Call these endpoints ONLY if the user explicitly asks to analyze images, preview_csv, or export_csv. Never call for general Q&A.",
+  "auth": { "type": "none" },
   "api": {
     "type": "openapi",
     "url": "https://chatbay-analyzer.onrender.com/openapi.json",
