@@ -331,29 +331,34 @@ def preview_csv():
 
 @app.route("/export_csv")
 def export_csv():
+    """
+    Generates the complete eBay CSV and returns it inline (base64-encoded text)
+    so ChatGPT can display or attach it directly in chat instead of a download link.
+    """
     try:
         condition = request.args.get("condition", DEFAULT_CONDITION).lower()
         photos_per_item = int(request.args.get("photos_per_item", DEFAULT_PHOTOS_PER_ITEM))
-        inline = request.args.get("inline", "0") == "1"
         groups = fetch_gallery_groups()
         out = io.StringIO()
         w = csv.writer(out, lineterminator="\n")
         w.writerow(FULL_HEADERS)
+
         for g in groups:
-            photos = collect_item_photos(g.get("photo_urls","").split(","), photos_per_item)
+            photos = collect_item_photos(g.get("photo_urls", "").split(","), photos_per_item)
             analyzed = analyze_images_with_vision(photos, condition)
             w.writerow(row_from_item(analyzed, photos, condition))
             time.sleep(SLEEP_BETWEEN_ITEMS)
+
         csv_data = out.getvalue()
         filename = f"chatbay-ebay-export-{datetime.datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.csv"
 
-        if inline:
-            return jsonify({"filename": filename, "csv_text": csv_data})
-
-        return Response(csv_data, headers={
-            "Content-Type": "text/csv; charset=utf-8",
-            "Content-Disposition": f"attachment; filename={filename}",
-            "Cache-Control": "no-store"
+        # Instead of sending as attachment, embed it in JSON for chat
+        encoded = base64.b64encode(csv_data.encode("utf-8")).decode("utf-8")
+        return jsonify({
+            "ok": True,
+            "filename": filename,
+            "csv_preview": csv_data[:800],  # first few lines visible for chat context
+            "csv_base64": encoded
         })
     except Exception as e:
         print("❌ Export error:", e)
