@@ -1,0 +1,179 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Chatbay Analyzer API",
+    "version": "5.3.0",
+    "description": "Flask + GPT-4o Vision Analyzer and eBay CSV Exporter for Render & Hostinger hybrid deployment. Fetches grouped image sets from chatbay.site (using /ebay-media isolation), analyzes them visually, and generates verified, SEO-rich, eBay-compliant listings as JSON preview or downloadable CSV. Supports comma-separated photo URLs, business policy defaults, and OpenAPI endpoint exposure."
+  },
+  "servers": [
+    { "url": "https://chatbay-analyzer.onrender.com" }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Check API status, version, and environment source",
+        "operationId": "get_health_status",
+        "responses": {
+          "200": {
+            "description": "Service health information",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "service": { "type": "string" },
+                    "version": { "type": "string" },
+                    "source": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/openapi.json": {
+      "get": {
+        "summary": "Serve this OpenAPI definition file",
+        "operationId": "serve_openapi_json",
+        "responses": {
+          "200": {
+            "description": "Returns OpenAPI JSON file",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/gallery": {
+      "get": {
+        "summary": "Fetch grouped image sets from chatbay.site gallery API",
+        "operationId": "get_gallery_groups",
+        "servers": [
+          { "url": "https://chatbay.site/wp-json/chatbay/v1" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Returns grouped image sets (comma-separated URLs per product).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "total_images": { "type": "integer" },
+                    "total_groups": { "type": "integer" },
+                    "groups": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "photo_urls": {
+                            "type": "string",
+                            "description": "Comma-separated image URLs for one product listing."
+                          },
+                          "preview": {
+                            "type": "string",
+                            "description": "Base64-encoded thumbnail preview."
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/preview_csv": {
+      "get": {
+        "summary": "Preview first 2 analyzed listings (JSON only)",
+        "operationId": "preview_csv",
+        "parameters": [
+          {
+            "name": "photos_per_item",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "integer", "minimum": 1, "maximum": 12 },
+            "description": "Number of photos per product item (1–12)."
+          },
+          {
+            "name": "condition",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string", "enum": ["new", "preowned", "parts"] },
+            "description": "Item condition (new, preowned, or parts)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "JSON preview of the first 2 listings following v5.3 eBay structure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "preview_count": { "type": "integer" },
+                    "photos_per_item": { "type": "integer" },
+                    "condition": { "type": "string" },
+                    "rows": {
+                      "type": "array",
+                      "items": { "type": "object" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Missing required parameters." }
+        }
+      }
+    },
+
+    "/export_csv": {
+      "get": {
+        "summary": "Generate and download eBay-ready CSV",
+        "operationId": "export_csv",
+        "parameters": [
+          {
+            "name": "photos_per_item",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "integer", "minimum": 1, "maximum": 12 },
+            "description": "Number of photos per item (1–12)."
+          },
+          {
+            "name": "condition",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string", "enum": ["new", "preowned", "parts"] },
+            "description": "Item condition (new, preowned, or parts)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Returns downloadable CSV file (comma-separated image URLs).",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": { "description": "Missing parameters." },
+          "500": { "description": "CSV generation failed or incomplete analysis." }
+        }
+      }
+    }
+  }
+}
