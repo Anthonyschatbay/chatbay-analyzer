@@ -1,30 +1,56 @@
+# ─────────────────────────────────────────────
+# Render Blueprint for Chatbay Analyzer v5.5
+# Flask + GPT-4o Vision → eBay CSV Generator
+# Deployed via Render + GitHub
+# ─────────────────────────────────────────────
 services:
   - type: web
     name: chatbay-analyzer
     env: python
-    region: oregon
-    plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --timeout 120 --workers 2
-    healthCheckPath: /health
+    region: oregon               # change if needed
+    plan: starter
+    autoDeploy: true
+
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+
+    startCommand: gunicorn app:app --workers=2 --threads=4 --timeout=240
+
     envVars:
       - key: OPENAI_API_KEY
-        sync: false         # set in Render dashboard
+        sync: false
       - key: CHATBAY_GALLERY_URL
         value: https://chatbay.site/wp-json/chatbay/v1/gallery
-      - key: DEFAULT_CONDITION
-        value: preowned
-      - key: DEFAULT_PHOTOS_PER_ITEM
-        value: "4"
       - key: EBAY_UPLOADS_URL
         value: https://chatbay.site/ebay-media
       - key: EBAY_LOCATION
-        value: "Middletown, CT, USA"
+        value: Middletown, CT, USA
       - key: EBAY_SHIP_PROFILE
-        value: "ADV FREE 2 DAYS"
+        value: ADV FREE 2 DAYS
       - key: EBAY_RET_PROFILE
-        value: "No returns accepted"
+        value: No returns accepted
       - key: EBAY_PAY_PROFILE
-        value: "eBay Payments"
+        value: eBay Payments
+      - key: DEFAULT_CONDITION
+        value: preowned
+      - key: DEFAULT_PHOTOS_PER_ITEM
+        value: 4
       - key: PORT
-        value: "10000"
+        value: 10000
+
+    healthCheckPath: /health
+    autoRestart: true
+    scaling:
+      minInstances: 1
+      maxInstances: 1
+
+# ─────────────────────────────────────────────
+# Notes:
+# - Flask served via Gunicorn (2 workers, 4 threads each)
+# - /health endpoint used for Render health checks
+# - API endpoints:
+#   /health, /openapi.json, /gallery, /preview_csv, /export_csv
+# - Logs + errors visible under Render dashboard → Logs
+# - Update OPENAI_API_KEY in Render → Environment tab (private)
+# ─────────────────────────────────────────────
