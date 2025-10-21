@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Chatbay Analyzer API",
-    "version": "5.3.0",
-    "description": "Flask + GPT-4o Vision Analyzer and eBay CSV Exporter for Render & Hostinger hybrid deployment. Fetches grouped image sets from chatbay.site (using /ebay-media isolation), analyzes them visually, and generates verified, SEO-rich, eBay-compliant listings as JSON preview or downloadable CSV. Supports comma-separated photo URLs, business policy defaults, and OpenAPI endpoint exposure."
+    "version": "5.3.2",
+    "description": "Chatbay Analyzer — Flask + GPT-4o Vision system for automating eBay CSV creation. Fetches grouped image sets from chatbay.site, analyzes them visually, and generates verified, SEO-optimized, eBay-compliant listings as JSON preview or downloadable CSV. Supports comma-separated photo URLs, business policy defaults, and full ChatGPT Action integration."
   },
   "servers": [
     { "url": "https://chatbay-analyzer.onrender.com" }
@@ -11,7 +11,7 @@
   "paths": {
     "/health": {
       "get": {
-        "summary": "Check API status, version, and environment source",
+        "summary": "Check API status and environment",
         "operationId": "get_health_status",
         "responses": {
           "200": {
@@ -36,14 +36,21 @@
 
     "/openapi.json": {
       "get": {
-        "summary": "Serve this OpenAPI definition file",
+        "summary": "Serve this OpenAPI definition",
         "operationId": "serve_openapi_json",
         "responses": {
           "200": {
-            "description": "Returns OpenAPI JSON file",
+            "description": "Returns the OpenAPI schema used by ChatGPT Actions.",
             "content": {
               "application/json": {
-                "schema": { "type": "object" }
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "openapi": { "type": "string" },
+                    "info": { "type": "object" },
+                    "paths": { "type": "object" }
+                  }
+                }
               }
             }
           }
@@ -60,7 +67,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Returns grouped image sets (comma-separated URLs per product).",
+            "description": "Returns grouped product photo sets (comma-separated URLs per product).",
             "content": {
               "application/json": {
                 "schema": {
@@ -75,7 +82,7 @@
                         "properties": {
                           "photo_urls": {
                             "type": "string",
-                            "description": "Comma-separated image URLs for one product listing."
+                            "description": "Comma-separated URLs for one product listing."
                           },
                           "preview": {
                             "type": "string",
@@ -95,7 +102,7 @@
 
     "/preview_csv": {
       "get": {
-        "summary": "Preview first 2 analyzed listings (JSON only)",
+        "summary": "Preview first two analyzed listings (JSON only)",
         "operationId": "preview_csv",
         "parameters": [
           {
@@ -103,19 +110,19 @@
             "in": "query",
             "required": true,
             "schema": { "type": "integer", "minimum": 1, "maximum": 12 },
-            "description": "Number of photos per product item (1–12)."
+            "description": "Number of photos per listing (1–12)."
           },
           {
             "name": "condition",
             "in": "query",
             "required": true,
             "schema": { "type": "string", "enum": ["new", "preowned", "parts"] },
-            "description": "Item condition (new, preowned, or parts)."
+            "description": "Item condition."
           }
         ],
         "responses": {
           "200": {
-            "description": "JSON preview of the first 2 listings following v5.3 eBay structure.",
+            "description": "JSON preview of the first two listings following eBay v5.3 format.",
             "content": {
               "application/json": {
                 "schema": {
@@ -133,14 +140,14 @@
               }
             }
           },
-          "400": { "description": "Missing required parameters." }
+          "400": { "description": "Missing required query parameters." }
         }
       }
     },
 
     "/export_csv": {
       "get": {
-        "summary": "Generate and download eBay-ready CSV",
+        "summary": "Generate and download complete eBay-ready CSV",
         "operationId": "export_csv",
         "parameters": [
           {
@@ -148,19 +155,19 @@
             "in": "query",
             "required": true,
             "schema": { "type": "integer", "minimum": 1, "maximum": 12 },
-            "description": "Number of photos per item (1–12)."
+            "description": "Number of photos per listing (1–12)."
           },
           {
             "name": "condition",
             "in": "query",
             "required": true,
             "schema": { "type": "string", "enum": ["new", "preowned", "parts"] },
-            "description": "Item condition (new, preowned, or parts)."
+            "description": "Item condition."
           }
         ],
         "responses": {
           "200": {
-            "description": "Returns downloadable CSV file (comma-separated image URLs).",
+            "description": "Returns downloadable CSV file with all listings (comma-separated photo URLs).",
             "content": {
               "text/csv": {
                 "schema": {
@@ -175,5 +182,40 @@
         }
       }
     }
+  },
+
+  "x-chatgpt": {
+    "actions": [
+      {
+        "name": "preview_csv",
+        "description": "Preview analyzed listings before generating the full CSV file.",
+        "parameters": {
+          "photos_per_item": {
+            "type": "integer",
+            "description": "Number of photos per product item (1–12)."
+          },
+          "condition": {
+            "type": "string",
+            "enum": ["new", "preowned", "parts"],
+            "description": "Item condition."
+          }
+        }
+      },
+      {
+        "name": "export_csv",
+        "description": "Generate and download the complete eBay-compliant CSV file.",
+        "parameters": {
+          "photos_per_item": {
+            "type": "integer",
+            "description": "Number of photos per product item (1–12)."
+          },
+          "condition": {
+            "type": "string",
+            "enum": ["new", "preowned", "parts"],
+            "description": "Item condition."
+          }
+        }
+      }
+    ]
   }
 }
