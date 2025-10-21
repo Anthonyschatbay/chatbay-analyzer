@@ -1,11 +1,9 @@
-# push.ps1
-Set-Location -Path "$PSScriptRoot"
+Param(
+  [string]$Msg = "chore: push $(Get-Date -AsUTC -Format 'yyyy-MM-ddTHH:mm:ssZ')"
+)
 
-git add openapi.json app.py templates/ Procfile requirements.txt runtime.txt .gitignore
-if (-not (git diff --cached --quiet)) {
-  git commit -m "Update OpenAPI 5.3.2 + Actions; CSV endpoints verified"
-} else {
-  Write-Host "No staged changes." -ForegroundColor Yellow
-}
+if (-not (Test-Path .git)) { git init; git branch -M main }
 
-git push
+git add -A
+git commit -m $Msg
+git push -u origin main
