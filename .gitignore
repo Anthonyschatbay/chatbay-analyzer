@@ -1,2 +1,51 @@
+# ─────────────────────────────────────────
+# Chatbay Analyzer – .gitignore
+# ─────────────────────────────────────────
+
+# env / secrets
 .env
+.env.*.local
+*.env
+
+# Python
 __pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+.build/
+dist/
+pip-wheel-metadata/
+*.log
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Notebooks / scratch
+.ipynb_checkpoints/
+
+# Local caches
+.cache/
+.mypy_cache/
+pytest_cache/
+
+# Coverage
+htmlcov/
+.coverage
+coverage.xml
+*.cover
+
+# Generated artifacts
+*.tmp
+*.bak

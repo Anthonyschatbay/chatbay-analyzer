@@ -1,2 +1,1 @@
-web: gunicorn action_handler:app
-
+web: gunicorn app:app

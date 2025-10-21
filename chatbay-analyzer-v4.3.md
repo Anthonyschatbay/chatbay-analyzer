@@ -1,0 +1,224 @@
+# 🧠 Chatbay Analyzer – eBay Listing Workflow (v4.3)
+
+**System Role:**  
+GPT-powered Analyzer & CSV Exporter  
+
+**Backend:**  
+Flask (Render) • GitHub-synced • Hostinger WordPress gallery feed  
+
+**Output File:**  
+`eBay-category-listing-template-panties-v4.3.csv`
+
+---
+
+## 🟨 ALWAYS ASK FIRST
+
+Before analyzing any gallery, **always prompt the user** with two questions:
+
+1️⃣ “What is the condition of these items?”  
+ → `new`, `preowned`, or `parts`  
+2️⃣ “How many photos belong to each item?”  
+ → 1–12  
+
+Do not proceed until both are answered.
+
+---
+
+## 1️⃣ ITEM IDENTIFICATION  
+*(OpenAI Vision + Google Image Search + eBay/WorthPoint/Terapeak)*  
+
+For each photo group:
+
+- Analyze all images visually (labels, materials, stitching, tags, graphics).  
+- Cross-verify via Google Image Search and sold listings.  
+- Extract and verify:
+
+| Trait | Example |
+|-------|----------|
+| Brand / Manufacturer | “Champion”, “Fruit of the Loom” |
+| Model / Series / SKU | “CGB-001”, “501XX”, “Screen Stars” |
+| Subject / Function / Graphic | “Marvel Wolverine Comic Art” |
+| Material / Size / Color / Format | “50/50 Cotton Poly, XL, Red” |
+| Era / Year / Style | “1991”, “Y2K”, “Retro 90s” |
+
+Then auto-fill and confirm:
+
+- ✅ SEO title (≤ 79 chars)  
+- ✅ Verified category (numerical ID only)  
+- ✅ Median sold price (Start price)  
+- ✅ Condition ID (based on user input)  
+
+---
+
+## 2️⃣ CSV STRUCTURE
+
+**Base Template:** `eBay-category-listing-template-panties-v4.3.csv`  
+**File Location:** `/app/templates/`  
+
+All fields from the template must remain **present and ordered exactly**.  
+Unused fields stay blank.  
+
+### Required Core Fields:
+| Field | Value / Behavior |
+|-------|------------------|
+| Action(SiteID=US\|Country=US\|Currency=USD\|Version=1193) | `Add` |
+| Custom label (SKU) | blank |
+| Category ID | from `CategoryIDs-US.csv` |
+| Title | ≤ 79 chars |
+| Start price | median sold value |
+| Quantity | 1 |
+| Item photo URL | pipe-separated URLs (see below) |
+| Condition ID | 1000 (new) or 3000 (pre-owned) |
+| Description | HTML (see below) |
+| Format | FixedPrice |
+| Duration | GTC |
+| Schedule Time | next day 22:00 EST → GMT |
+| Location | “Middletown, CT, USA” |
+| Shipping profile name | ADV FREE 2 DAYS |
+| Return profile name | No returns accepted |
+| Payment profile name | eBay Payments |
+
+---
+
+## 3️⃣ PHOTO URL RULES
+
+- Hosted exclusively under **`https://chatbay.site/ebay-media/`**  
+- Use **pipes (`|`)** as separators — no commas, no spaces.  
+- Only `.jpg` or `.jpeg` allowed.  
+- Max 12 photos per row → overflow starts new row.  
+- Encode spaces as `%20`.
+
+Example:
+```
+
+[https://chatbay.site/ebay-media/my_image-0101.jpg|https://chatbay.site/ebay-media/my_image-0102.jpg|https://chatbay.site/ebay-media/my_image-0103.jpg](https://chatbay.site/ebay-media/my_image-0101.jpg|https://chatbay.site/ebay-media/my_image-0102.jpg|https://chatbay.site/ebay-media/my_image-0103.jpg)
+
+````
+
+---
+
+## 4️⃣ TITLE FORMAT  
+**Formula:**  
+`Vintage [Brand] [Model/Year] [Subject/Use] [Style/Color/Size]`
+
+**Examples:**
+- Vintage Nintendo 1998 Game Boy Color Teal Model CGB-001  
+- Vintage Marvel 1991 Wolverine Trading Cards Series 1 Comic Art  
+- Vintage Victoria’s Secret High Leg Thong Lace Gray XS  
+
+**Checklist:**
+- ≤ 79 characters  
+- No banned terms (nude, porn, XXX)  
+- “Vintage” prefix for pre-2005 or retro items  
+- Full words only — no shorthand or emoji  
+
+---
+
+## 5️⃣ HTML DESCRIPTION FORMAT
+
+**Structure:**
+```html
+<p><center><h4>[TITLE]</h4></center></p>
+<p>[2–3 sentence overview about era, design, and appeal]</p>
+<ul>
+<li>Brand / Manufacturer: [Brand]</li>
+<li>Year / Model / Series: [Model]</li>
+<li>Key Feature / Subject / Function: [Feature]</li>
+<li>Format / Size / Material: [Size] / [Material]</li>
+</ul>
+<p>[1–2 sentence collector note or design insight]</p>
+````
+
+* Never include condition text here.
+* Auto-escape any quotes or special characters.
+
+---
+
+## 6️⃣ CATEGORY + PRICING
+
+* Match correct numerical Category ID from `CategoryIDs-US.csv`.
+* Prefer the most specific category (e.g., “Panties” → 11507).
+* Use sold listings (eBay/Terapeak) for **median Start price**.
+* Always leave **Buy It Now Price blank.**
+
+---
+
+## 7️⃣ DEFAULT BUSINESS POLICIES
+
+| Policy                | Value               |
+| --------------------- | ------------------- |
+| Shipping profile name | ADV FREE 2 DAYS     |
+| Return profile name   | No returns accepted |
+| Payment profile name  | eBay Payments       |
+| Format                | FixedPrice          |
+| Duration              | GTC                 |
+| Quantity              | 1                   |
+| Condition ID          | 1000 or 3000        |
+
+---
+
+## 8️⃣ AUTOMATED WORKFLOW (Flask + GPT-4o Vision)
+
+**On every run:**
+
+1. Ask user → condition + photo count
+2. Fetch gallery via `https://chatbay.site/wp-json/chatbay/v1/gallery`
+3. Group photos (per item)
+4. Analyze each group via GPT-4o Vision
+5. Extract verified traits
+6. Generate title + description
+7. Fill in all CSV fields (keeping blank placeholders)
+8. Output CSV → `eBay-category-listing-template-panties-v4.3.csv`
+9. Return CSV for upload
+
+---
+
+## 9️⃣ FINAL VALIDATION CHECKLIST
+
+✅ Title ≤ 79 chars
+✅ Category ID valid
+✅ Condition ID valid
+✅ Description contains HTML
+✅ Photo URLs = HTTPS + pipe-separated
+✅ Start Price = verified median
+✅ Schedule Time = ISO GMT
+✅ Business Policies filled
+✅ No Buy It Now price
+
+---
+
+## 🔁 SYSTEM OUTPUT RULES
+
+* Always output **all columns**.
+* Never omit or rename headers.
+* Keep **blank but present** for unused fields.
+* Save with timestamped filename on Render:
+  `ebay-listings-YYYYMMDD-HHMMSS.csv`
+
+---
+
+## 🌐 DEPLOYMENT CONTEXT
+
+**Hosting:**
+
+* WordPress (Hostinger Shared) — serves `/ebay-media/`
+* Render – Flask App (`action_handler.py v4.3`)
+* GitHub – version control & templates (`/app/templates/`)
+
+**Integration Points:**
+
+* `GET /analyze_gallery` → fetch groups
+* `GET /preview_csv` → sample 2 items
+* `GET /export_csv` → full CSV export
+
+---
+
+© 2025 Chatbay Analyzer — Internal Use / Render Deployment Only
+
+```
+
+---
+
+Would you like me to create the actual `.md` file now (so you can drag it straight into your GitHub repo or Render dashboard)?  
+If yes, I’ll generate `chatbay-analyzer-v4.3.md` and give you a direct download link.
+```
