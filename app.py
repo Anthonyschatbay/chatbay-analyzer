@@ -1,6 +1,7 @@
 # ──────────────────────────────────────────────────────────────
-# Chatbay Analyzer → Flask + OpenAI Vision (v5.3 unified workflow)
-# Aligned with Workflow v4.3, for Render + Hostinger hybrid
+# Chatbay Analyzer → Flask + OpenAI Vision (v5.4 visual-enabled)
+# Aligned with Workflow v4.3 + Vision patch
+# For Render + Hostinger hybrid (gallery + analyzer)
 # Routes:
 #   /health
 #   /openapi.json
@@ -16,12 +17,12 @@ from openai import OpenAI
 # ──────────────────────────────────────────────────────────────
 # Setup
 app = Flask(__name__)
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))  # ✅ FIXED — no 'proxies' argument
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ──────────────────────────────────────────────────────────────
 # Env helpers
 def getenv_str(key, default): return str(os.getenv(key, default)).strip()
-def getenv_int(key, default): 
+def getenv_int(key, default):
     try: return int(os.getenv(key, str(default)))
     except: return default
 def getenv_float(key, default):
@@ -63,7 +64,7 @@ def sanitize_photo_url(u: str) -> str:
     if not u: return u
     if u.startswith("http://"): u = "https://" + u[len("http://"):]
     parts = urllib.parse.urlsplit(u)
-    path  = urllib.parse.quote(parts.path, safe="/._-")
+    path = urllib.parse.quote(parts.path, safe="/._-")
     return urllib.parse.urlunsplit(("https", parts.netloc, path, "", ""))
 
 def join_item_photos(urls, max_photos):
@@ -94,9 +95,45 @@ def fetch_gallery():
         return []
 
 # ──────────────────────────────────────────────────────────────
+# Vision Analysis: fetch and embed images for visual reading
+# ──────────────────────────────────────────────────────────────
+def analyze_images_with_vision(photo_urls, condition):
+    """Fetches images and sends them to GPT Vision for title/description generation."""
+    analyzed_texts = []
+    for url in photo_urls:
+        safe_url = sanitize_photo_url(url)
+        try:
+            img = requests.get(safe_url, timeout=10)
+            if img.status_code != 200:
+                print(f"⚠️ Skipped {safe_url} (HTTP {img.status_code})")
+                continue
+
+            result = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": f"Describe this product for an eBay listing, keep concise, condition={condition}"},
+                        {"type": "image", "image_bytes": img.content}
+                    ]
+                }],
+                max_tokens=120
+            )
+            text = result.choices[0].message.content.strip()
+            analyzed_texts.append(text)
+            print(f"🧩 Vision processed: {safe_url}")
+            time.sleep(1.2)
+
+        except Exception as e:
+            print(f"❌ Vision error for {safe_url}: {e}")
+            continue
+
+    return analyzed_texts
+
+# ──────────────────────────────────────────────────────────────
 @app.route("/health")
 def health():
-    return jsonify({"ok": True, "service": "chatbay-analyzer", "version": "v5.3", "source": "Render/Hostinger"})
+    return jsonify({"ok": True, "service": "chatbay-analyzer", "version": "v5.4", "source": "Render/Hostinger"})
 
 # ──────────────────────────────────────────────────────────────
 @app.route("/openapi.json")
@@ -106,14 +143,13 @@ def serve_openapi():
 # ──────────────────────────────────────────────────────────────
 @app.route("/gallery")
 def get_gallery():
-    """Proxy to chatbay.site/wp-json/chatbay/v1/gallery"""
     groups = fetch_gallery()
     return jsonify({"total_groups": len(groups), "groups": groups})
 
 # ──────────────────────────────────────────────────────────────
 @app.route("/preview_csv")
 def preview_csv():
-    """Preview first 2 CSV rows with live gallery data"""
+    """Preview first 2 CSV rows with Vision-generated titles"""
     condition = request.args.get("condition", DEFAULT_CONDITION)
     photos_per_item = int(request.args.get("photos_per_item", DEFAULT_PHOTOS_PER_ITEM))
     groups = fetch_gallery()
@@ -125,7 +161,10 @@ def preview_csv():
     for idx, group in enumerate(groups[:2]):
         photos = [p.strip() for p in group["photo_urls"].split(",") if p.strip()]
         photo_str = join_item_photos(photos, photos_per_item)
-        title = f"Listing {idx+1}"
+
+        analyzed = analyze_images_with_vision(photos[:1], condition)
+        title = analyzed[0][:79] if analyzed else f"Listing {idx+1}"
+
         preview_rows.append({
             "Title": title,
             "Category ID": "15687",
@@ -139,18 +178,17 @@ def preview_csv():
             "Payment profile name": DEFAULT_PAY_PROFILE
         })
 
-    preview = {
+    return jsonify({
         "preview_count": len(preview_rows),
         "photos_per_item": photos_per_item,
         "condition": condition,
         "rows": preview_rows
-    }
-    return jsonify(preview)
+    })
 
 # ──────────────────────────────────────────────────────────────
 @app.route("/export_csv")
 def export_csv():
-    """Generate full eBay-ready CSV using live gallery data"""
+    """Generate full CSV with Vision titles and real photos"""
     condition = request.args.get("condition", DEFAULT_CONDITION)
     photos_per_item = int(request.args.get("photos_per_item", DEFAULT_PHOTOS_PER_ITEM))
     groups = fetch_gallery()
@@ -171,8 +209,9 @@ def export_csv():
     for idx, group in enumerate(groups):
         photos = [p.strip() for p in group["photo_urls"].split(",") if p.strip()]
         photo_str = join_item_photos(photos, photos_per_item)
-        title = f"Listing {idx+1}"
-        desc = f"<p><center><h4>{title}</h4></center></p><p>Auto-generated listing from Chatbay Analyzer.</p>"
+        analyzed = analyze_images_with_vision(photos[:1], condition)
+        title = analyzed[0][:79] if analyzed else f"Listing {idx+1}"
+        desc = f"<p><center><h4>{title}</h4></center></p><p>{' '.join(analyzed) if analyzed else 'Auto-generated listing from Chatbay Analyzer.'}</p>"
 
         writer.writerow([
             "Add", "15687", title, "34.99", "1", photo_str,
@@ -193,5 +232,5 @@ def export_csv():
 # ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
-    print(f"🚀 Chatbay Analyzer v5.3 running on port {port}")
+    print(f"🚀 Chatbay Analyzer v5.4 (Vision) running on port {port}")
     app.run(host="0.0.0.0", port=port, debug=False)
