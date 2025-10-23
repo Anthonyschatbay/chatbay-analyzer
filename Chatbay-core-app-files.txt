@@ -1,0 +1,12 @@
+Core App Files
+File	Purpose	Status
+app.py	Your Flask app — main entry for gunicorn app:app	✅
+requirements.txt	Pinned dependencies for Render build	✅ Updated (3.0.3 / 1.50.2 stack)
+runtime.txt	Specifies Python version (python-3.11.9)	✅ Stable
+render.yaml	Declarative deployment config	✅ Updated w/ Dropbox + CORS vars
+Procfile	Optional on Render (redundant if using render.yaml)	✅ Safe to keep or remove
+.gitignore	Cleaned for Flask/venv/.env etc.	✅ Updated
+.env	Local secrets (ignored from git)	✅ Don’t push this file
+templates/	Flask templates (if using HTML output)	✅ Optional but fine
+vision_test.py	Local test harness for Vision	✅ Local only
+chatbay-analyzer-action.json	OpenAPI spec for your ChatGPT Action	✅ Nice for integr

@@ -1,56 +1,16 @@
-# ─────────────────────────────────────────────
-# Render Blueprint for Chatbay Analyzer v5.5
-# Flask + GPT-4o Vision → eBay CSV Generator
-# Deployed via Render + GitHub
-# ─────────────────────────────────────────────
-services:
-  - type: web
-    name: chatbay-analyzer
-    env: python
-    region: oregon               # change if needed
-    plan: starter
-    autoDeploy: true
+# Core
+OPENAI_API_KEY
+ALLOWED_HOSTS=chatbay.site,i.postimg.cc,cdn.chatbay.site
+FLASK_ENV=production
+PYTHONUNBUFFERED=1
 
-    buildCommand: |
-      pip install --upgrade pip
-      pip install -r requirements.txt
+# Dropbox OAuth 2 Refresh Flow
+DROPBOX_APP_KEY
+DROPBOX_APP_SECRET
+DROPBOX_REFRESH_TOKEN
+DROPBOX_ACCESS_TOKEN   # (legacy optional)
 
-    startCommand: gunicorn app:app --workers=2 --threads=4 --timeout=240
-
-    envVars:
-      - key: OPENAI_API_KEY
-        sync: false
-      - key: CHATBAY_GALLERY_URL
-        value: https://chatbay.site/wp-json/chatbay/v1/gallery
-      - key: EBAY_UPLOADS_URL
-        value: https://chatbay.site/ebay-media
-      - key: EBAY_LOCATION
-        value: Middletown, CT, USA
-      - key: EBAY_SHIP_PROFILE
-        value: ADV FREE 2 DAYS
-      - key: EBAY_RET_PROFILE
-        value: No returns accepted
-      - key: EBAY_PAY_PROFILE
-        value: eBay Payments
-      - key: DEFAULT_CONDITION
-        value: preowned
-      - key: DEFAULT_PHOTOS_PER_ITEM
-        value: 4
-      - key: PORT
-        value: 10000
-
-    healthCheckPath: /health
-    autoRestart: true
-    scaling:
-      minInstances: 1
-      maxInstances: 1
-
-# ─────────────────────────────────────────────
-# Notes:
-# - Flask served via Gunicorn (2 workers, 4 threads each)
-# - /health endpoint used for Render health checks
-# - API endpoints:
-#   /health, /openapi.json, /gallery, /preview_csv, /export_csv
-# - Logs + errors visible under Render dashboard → Logs
-# - Update OPENAI_API_KEY in Render → Environment tab (private)
-# ─────────────────────────────────────────────
+# Folder setup
+DROPBOX_IMAGE_FOLDER=/ebay
+DROPBOX_CSV_FOLDER=/csv
+DROPBOX_INCLUDE_SUBFOLDERS=true
