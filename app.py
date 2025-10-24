@@ -1,60 +1,93 @@
-# app.py — Chatbay Analyzer API (debug mode for Render import issue)
+# app.py — Chatbay Analyzer API (v8.4 Secure + HTML UI)
+# Exposes:
+#   GET  /                    → secure_upload.html (browser UI)
+#   GET  /health              → service status
+#   POST /preview_csv         → returns JSON preview
+#   POST /export_csv          → returns JSON or downloadable CSV
+#
+# Adds: Password protection via UPLOAD_PASSWORD environment variable
 
 import os
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file, render_template
 from flask_cors import CORS
 from dotenv import load_dotenv
+from io import BytesIO
 
 load_dotenv()
 
 # ──────────────────────────────────────────────────────────────
-# Diagnostic info — this will appear in Render logs
-print("📁 Current working directory:", os.getcwd())
-print("📂 Files in cwd:", os.listdir("."))
-print("💡 PYTHONPATH:", os.getenv("PYTHONPATH"))
-
-# ──────────────────────────────────────────────────────────────
-# CORS + base config
+# Environment setup
 _frontend_origins = os.getenv(
     "FRONTEND_ORIGINS",
     "https://chatbay.site,https://www.chatbay.site,https://chatbay-analyzer.onrender.com,http://localhost:3000"
 )
 origins = [o.strip() for o in _frontend_origins.split(",") if o.strip()]
 
-app = Flask(__name__)
-print("✅ Flask app initialized successfully (imported by Gunicorn)")
+UPLOAD_PASSWORD = os.getenv("UPLOAD_PASSWORD", "").strip()
+
+app = Flask(__name__, template_folder="templates")
 CORS(app, resources={r"/*": {"origins": origins}})
 
+# Import analyzer after env is ready
+from vision_test import analyze_item, build_csv_bytes  # noqa: E402
+
 # ──────────────────────────────────────────────────────────────
-# Safe import for vision_test
-try:
-    from vision_test import analyze_item
-    print("✅ vision_test imported successfully")
-except Exception as e:
-    print("❌ vision_test import failed:", e)
-    analyze_item = None
+def check_auth(req):
+    """Validate password in request args, JSON, or Authorization header."""
+    pw = ""
+    if "password" in req.args:
+        pw = req.args.get("password", "")
+    elif req.is_json:
+        data = req.get_json(silent=True) or {}
+        pw = data.get("password", "")
+    elif "Authorization" in req.headers:
+        auth = req.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            pw = auth.replace("Bearer ", "").strip()
+
+    if not UPLOAD_PASSWORD:
+        print("⚠️  Warning: UPLOAD_PASSWORD not set in environment!")
+        return True
+
+    if pw != UPLOAD_PASSWORD:
+        print("❌ Unauthorized access attempt.")
+        return False
+
+    return True
+
+# ──────────────────────────────────────────────────────────────
+@app.get("/")
+def index():
+    """Serve the secure upload web form."""
+    return render_template("secure_upload.html")
 
 # ──────────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
+    """Basic service heartbeat."""
     return jsonify({
         "ok": True,
         "service": "chatbay-analyzer",
         "origins": origins,
+        "password_protected": bool(UPLOAD_PASSWORD),
     })
 
 # ──────────────────────────────────────────────────────────────
 def _payload_defaults(data: dict):
+    """Normalize input payload and apply environment defaults."""
     return {
         "input": (data.get("input") or "").strip(),
         "condition": (data.get("condition") or os.getenv("DEFAULT_CONDITION", "preowned")).strip().lower(),
         "photos_per_item": int(data.get("photos_per_item") or os.getenv("DEFAULT_PHOTOS_PER_ITEM", 4)),
     }
 
+# ──────────────────────────────────────────────────────────────
 @app.post("/preview_csv")
 def preview_csv():
-    if not analyze_item:
-        return jsonify({"ok": False, "error": "vision_test failed to import"}), 500
+    """Run a 1-item Vision analysis preview."""
+    if not check_auth(request):
+        return jsonify({"ok": False, "error": "Unauthorized"}), 401
+
     try:
         data = request.get_json(force=True) or {}
         p = _payload_defaults(data)
@@ -68,10 +101,13 @@ def preview_csv():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 400
 
+# ──────────────────────────────────────────────────────────────
 @app.post("/export_csv")
 def export_csv():
-    if not analyze_item:
-        return jsonify({"ok": False, "error": "vision_test failed to import"}), 500
+    """Run full batch Vision analysis and return downloadable CSV."""
+    if not check_auth(request):
+        return jsonify({"ok": False, "error": "Unauthorized"}), 401
+
     try:
         data = request.get_json(force=True) or {}
         p = _payload_defaults(data)
@@ -81,7 +117,15 @@ def export_csv():
             photos_per_item=p["photos_per_item"],
             preview=False
         )
-        return jsonify(result), 200
+
+        # Convert result to CSV bytes and send as file download
+        csv_bytes, filename = build_csv_bytes(result)
+        return send_file(
+            BytesIO(csv_bytes.read()),
+            as_attachment=True,
+            download_name=filename,
+            mimetype="text/csv"
+        )
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 400
 
