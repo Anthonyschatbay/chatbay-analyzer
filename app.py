@@ -1,112 +1,90 @@
-# vision_test.py — Vision analyzer core (v8.1)
-# Used by both Flask endpoints and CLI testing.
+# app.py — Chatbay Analyzer API (debug mode for Render import issue)
 
 import os
-import io
-import csv
-import re
-import json
-import datetime
-from statistics import median
-import requests
-from openai import OpenAI
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+from dotenv import load_dotenv
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+load_dotenv()
 
 # ──────────────────────────────────────────────────────────────
-def fetch_image_bytes(url: str) -> bytes:
-    """Fetch an image from URL and return raw bytes."""
-    r = requests.get(url, timeout=30)
-    r.raise_for_status()
-    return r.content
+# Diagnostic info — this will appear in Render logs
+print("📁 Current working directory:", os.getcwd())
+print("📂 Files in cwd:", os.listdir("."))
+print("💡 PYTHONPATH:", os.getenv("PYTHONPATH"))
 
 # ──────────────────────────────────────────────────────────────
-def analyze_images_with_vision(gallery_urls, condition, photos_per_item, limit_preview=False):
-    """
-    Run OpenAI Vision over grouped images.
-    Returns list[dict] describing each item.
-    """
-    groups = [
-        gallery_urls[i: i + photos_per_item]
-        for i in range(0, len(gallery_urls), photos_per_item)
-    ]
-    if limit_preview:
-        groups = groups[:1]
+# CORS + base config
+_frontend_origins = os.getenv(
+    "FRONTEND_ORIGINS",
+    "https://chatbay.site,https://www.chatbay.site,https://chatbay-analyzer.onrender.com,http://localhost:3000"
+)
+origins = [o.strip() for o in _frontend_origins.split(",") if o.strip()]
 
-    results = []
-    for group in groups:
-        prompt = (
-            "Analyze these product images and return a JSON object with:\n"
-            "brand, type, color, size, material, pattern, department, title, and category_id.\n"
-            "Keep values clean and simple for eBay CSV usage."
+app = Flask(__name__)
+print("✅ Flask app initialized successfully (imported by Gunicorn)")
+CORS(app, resources={r"/*": {"origins": origins}})
+
+# ──────────────────────────────────────────────────────────────
+# Safe import for vision_test
+try:
+    from vision_test import analyze_item
+    print("✅ vision_test imported successfully")
+except Exception as e:
+    print("❌ vision_test import failed:", e)
+    analyze_item = None
+
+# ──────────────────────────────────────────────────────────────
+@app.get("/health")
+def health():
+    return jsonify({
+        "ok": True,
+        "service": "chatbay-analyzer",
+        "origins": origins,
+    })
+
+# ──────────────────────────────────────────────────────────────
+def _payload_defaults(data: dict):
+    return {
+        "input": (data.get("input") or "").strip(),
+        "condition": (data.get("condition") or os.getenv("DEFAULT_CONDITION", "preowned")).strip().lower(),
+        "photos_per_item": int(data.get("photos_per_item") or os.getenv("DEFAULT_PHOTOS_PER_ITEM", 4)),
+    }
+
+@app.post("/preview_csv")
+def preview_csv():
+    if not analyze_item:
+        return jsonify({"ok": False, "error": "vision_test failed to import"}), 500
+    try:
+        data = request.get_json(force=True) or {}
+        p = _payload_defaults(data)
+        result = analyze_item(
+            input_arg=p["input"],
+            condition=p["condition"],
+            photos_per_item=p["photos_per_item"],
+            preview=True
         )
-        img_parts = [{"type": "image_url", "image_url": {"url": url}} for url in group]
-        messages = [{"role": "user", "content": [{"type": "text", "text": prompt}, *img_parts]}]
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
 
-        resp = client.chat.completions.create(model="gpt-4o", messages=messages, temperature=0)
-        text = resp.choices[0].message.content.strip()
-
-        try:
-            data = json.loads(re.search(r"\{.*\}", text, re.S).group(0))
-        except Exception:
-            data = {"raw_output": text}
-
-        data["photos"] = group
-        data["condition"] = condition
-        results.append(data)
-    return results
-
-# ──────────────────────────────────────────────────────────────
-def build_csv_bytes(data):
-    """
-    Build an in-memory CSV from analyzed data.
-    """
-    headers = [
-        "Action(SiteID=US|Country=US|Currency=USD|Version=1193)",
-        "Custom label (SKU)",
-        "Category ID",
-        "Category name",
-        "Title",
-        "Condition ID",
-        "Item photo URL",
-        "Description",
-    ]
-
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(headers)
-
-    for item in data:
-        row = [
-            "Add",
-            "",
-            item.get("category_id", ""),
-            "",
-            item.get("title", ""),
-            1000 if item.get("condition", "") == "new" else 3000,
-            ",".join(item.get("photos", [])),
-            json.dumps(item, ensure_ascii=False),
-        ]
-        writer.writerow(row)
-
-    csv_bytes = io.BytesIO(buf.getvalue().encode("utf-8"))
-    filename = f"eBay_export_{datetime.datetime.now().strftime('%Y-%m-%d-%H%M')}.csv"
-    return csv_bytes, filename
+@app.post("/export_csv")
+def export_csv():
+    if not analyze_item:
+        return jsonify({"ok": False, "error": "vision_test failed to import"}), 500
+    try:
+        data = request.get_json(force=True) or {}
+        p = _payload_defaults(data)
+        result = analyze_item(
+            input_arg=p["input"],
+            condition=p["condition"],
+            photos_per_item=p["photos_per_item"],
+            preview=False
+        )
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
 
 # ──────────────────────────────────────────────────────────────
-def analyze_item(input_arg, condition, photos_per_item, preview=False):
-    """
-    Compatibility wrapper used by Flask routes.
-    Splits input URLs and calls analyze_images_with_vision.
-    """
-    if not input_arg:
-        raise ValueError("No input provided")
-
-    # Split by commas, trim whitespace
-    gallery_urls = [u.strip() for u in input_arg.split(",") if u.strip()]
-    return analyze_images_with_vision(
-        gallery_urls=gallery_urls,
-        condition=condition,
-        photos_per_item=photos_per_item,
-        limit_preview=preview
-    )
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
