@@ -27,7 +27,7 @@ def expand_postimg_gallery(url: str) -> list[str]:
     Given a postimg.cc gallery URL, return a list of direct image URLs (.jpg/.png/.webp/.gif).
     Example gallery:
       https://postimg.cc/gallery/XXXXXX
-    We’ll scrape the HTML for https://i.postimg.cc/.../(file).(ext)
+    We'll scrape the HTML for https://i.postimg.cc/.../(file).(ext)
     """
     try:
         r = requests.get(url, timeout=15)
@@ -51,7 +51,7 @@ def normalize_to_image_urls(raw_list: list[str]) -> list[str]:
     """
     Take a list of raw inputs (may include gallery links) and return only direct image URLs.
     - Expands postimg.cc gallery links
-    - Keeps urls that already look like direct images (ending with image extensions)
+    - Keeps URLs that already look like direct images (ending with image extensions)
     - Filters out non-image/unknown links
     """
     out: list[str] = []
@@ -70,8 +70,7 @@ def normalize_to_image_urls(raw_list: list[str]) -> list[str]:
             out.append(u)
             continue
 
-        # Some postimg direct links are on i.postimg.cc without visible extension (rare). Skip for now.
-        # You can add a HEAD check here if you want to probe content-type, but that adds latency.
+        # Optional: could HEAD-check content-type here
     # De-dupe while preserving order
     return list(dict.fromkeys(out))
 
@@ -90,7 +89,6 @@ def analyze_images_with_vision(gallery_urls, condition, photos_per_item, limit_p
 
     results = []
     for group in groups:
-        # Skip empty groups (can happen if inputs were filtered out)
         if not group:
             continue
 
@@ -135,4 +133,43 @@ def build_csv_bytes(data):
     writer = csv.writer(buf)
     writer.writerow(headers)
 
-    for item in data
+    for item in data:
+        row = [
+            "Add",
+            "",
+            item.get("category_id", ""),
+            "",
+            item.get("title", ""),
+            1000 if item.get("condition", "") == "new" else 3000,
+            ",".join(item.get("photos", [])),
+            json.dumps(item, ensure_ascii=False),
+        ]
+        writer.writerow(row)
+
+    csv_bytes = io.BytesIO(buf.getvalue().encode("utf-8"))
+    filename = f"eBay_export_{datetime.datetime.now().strftime('%Y-%m-%d-%H%M')}.csv"
+    return csv_bytes, filename
+
+# ──────────────────────────────────────────────────────────────
+def analyze_item(input_arg, condition, photos_per_item, preview=False):
+    """
+    Compatibility wrapper used by Flask routes.
+    Splits input URLs and calls analyze_images_with_vision.
+    Supports automatic Postimg gallery expansion.
+    """
+    if not input_arg:
+        raise ValueError("No input provided")
+
+    raw_inputs = [u.strip() for u in input_arg.split(",") if u.strip()]
+    gallery_urls = normalize_to_image_urls(raw_inputs)
+
+    print(f"📦 {len(gallery_urls)} total image URLs ready for analysis.")
+    if not gallery_urls:
+        raise ValueError("No valid image URLs found after normalization")
+
+    return analyze_images_with_vision(
+        gallery_urls=gallery_urls,
+        condition=condition,
+        photos_per_item=photos_per_item,
+        limit_preview=preview,
+    )
