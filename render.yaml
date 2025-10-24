@@ -1,16 +1,18 @@
-# Core
-OPENAI_API_KEY
-ALLOWED_HOSTS=chatbay.site,i.postimg.cc,cdn.chatbay.site
-FLASK_ENV=production
-PYTHONUNBUFFERED=1
-
-# Dropbox OAuth 2 Refresh Flow
-DROPBOX_APP_KEY
-DROPBOX_APP_SECRET
-DROPBOX_REFRESH_TOKEN
-DROPBOX_ACCESS_TOKEN   # (legacy optional)
-
-# Folder setup
-DROPBOX_IMAGE_FOLDER=/ebay
-DROPBOX_CSV_FOLDER=/csv
-DROPBOX_INCLUDE_SUBFOLDERS=true
+services:
+  - type: web
+    name: chatbay-analyzer
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --chdir /opt/render/project/src --timeout 120 --workers 2
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.4
+      - key: FRONTEND_ORIGINS
+        value: https://chatbay.site,https://www.chatbay.site,https://chatbay-analyzer.onrender.com,http://localhost:3000
+      - key: DEFAULT_CONDITION
+        value: preowned
+      - key: DEFAULT_PHOTOS_PER_ITEM
+        value: "4"
+      - key: OPENAI_API_KEY
+        sync: false
