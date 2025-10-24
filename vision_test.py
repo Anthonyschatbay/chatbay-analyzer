@@ -1,6 +1,3 @@
-# vision_test.py — Vision analyzer core (v8.1)
-# Used by both Flask endpoints and CLI testing.
-
 import os
 import io
 import csv
@@ -8,17 +5,75 @@ import re
 import json
 import datetime
 from statistics import median
+from urllib.parse import urlparse
+
 import requests
 from openai import OpenAI
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ──────────────────────────────────────────────────────────────
+IMG_EXT_RE = re.compile(r"\.(?:jpg|jpeg|png|webp|gif)$", re.I)
+
 def fetch_image_bytes(url: str) -> bytes:
     """Fetch an image from URL and return raw bytes."""
     r = requests.get(url, timeout=30)
     r.raise_for_status()
     return r.content
+
+# ──────────────────────────────────────────────────────────────
+def expand_postimg_gallery(url: str) -> list[str]:
+    """
+    Given a postimg.cc gallery URL, return a list of direct image URLs (.jpg/.png/.webp/.gif).
+    Example gallery:
+      https://postimg.cc/gallery/XXXXXX
+    We’ll scrape the HTML for https://i.postimg.cc/.../(file).(ext)
+    """
+    try:
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+        html = r.text
+
+        # Find direct image URLs hosted on i.postimg.cc with common image extensions
+        imgs = re.findall(
+            r"https://i\.postimg\.cc/[A-Za-z0-9_\-\/\.]+?\.(?:jpg|jpeg|png|webp|gif)",
+            html,
+        )
+        # De-dupe (preserve order) and cap to a reasonable amount
+        unique_imgs = list(dict.fromkeys(imgs))[:500]
+        print(f"🖼️ Extracted {len(unique_imgs)} images from Postimg gallery: {url}")
+        return unique_imgs
+    except Exception as e:
+        print(f"⚠️ Failed to expand Postimg gallery {url}: {e}")
+        return []
+
+def normalize_to_image_urls(raw_list: list[str]) -> list[str]:
+    """
+    Take a list of raw inputs (may include gallery links) and return only direct image URLs.
+    - Expands postimg.cc gallery links
+    - Keeps urls that already look like direct images (ending with image extensions)
+    - Filters out non-image/unknown links
+    """
+    out: list[str] = []
+    for raw in raw_list:
+        if not raw:
+            continue
+        u = raw.strip()
+
+        # Expand Postimg gallery pages
+        if "postimg.cc/gallery/" in u:
+            out.extend(expand_postimg_gallery(u))
+            continue
+
+        # Accept direct image URLs
+        if IMG_EXT_RE.search(u):
+            out.append(u)
+            continue
+
+        # Some postimg direct links are on i.postimg.cc without visible extension (rare). Skip for now.
+        # You can add a HEAD check here if you want to probe content-type, but that adds latency.
+    # De-dupe while preserving order
+    return list(dict.fromkeys(out))
 
 # ──────────────────────────────────────────────────────────────
 def analyze_images_with_vision(gallery_urls, condition, photos_per_item, limit_preview=False):
@@ -35,6 +90,10 @@ def analyze_images_with_vision(gallery_urls, condition, photos_per_item, limit_p
 
     results = []
     for group in groups:
+        # Skip empty groups (can happen if inputs were filtered out)
+        if not group:
+            continue
+
         prompt = (
             "Analyze these product images and return a JSON object with:\n"
             "brand, type, color, size, material, pattern, department, title, and category_id.\n"
@@ -76,37 +135,4 @@ def build_csv_bytes(data):
     writer = csv.writer(buf)
     writer.writerow(headers)
 
-    for item in data:
-        row = [
-            "Add",
-            "",
-            item.get("category_id", ""),
-            "",
-            item.get("title", ""),
-            1000 if item.get("condition", "") == "new" else 3000,
-            ",".join(item.get("photos", [])),
-            json.dumps(item, ensure_ascii=False),
-        ]
-        writer.writerow(row)
-
-    csv_bytes = io.BytesIO(buf.getvalue().encode("utf-8"))
-    filename = f"eBay_export_{datetime.datetime.now().strftime('%Y-%m-%d-%H%M')}.csv"
-    return csv_bytes, filename
-
-# ──────────────────────────────────────────────────────────────
-def analyze_item(input_arg, condition, photos_per_item, preview=False):
-    """
-    Compatibility wrapper used by Flask routes.
-    Splits input URLs and calls analyze_images_with_vision.
-    """
-    if not input_arg:
-        raise ValueError("No input provided")
-
-    # Split by commas, trim whitespace
-    gallery_urls = [u.strip() for u in input_arg.split(",") if u.strip()]
-    return analyze_images_with_vision(
-        gallery_urls=gallery_urls,
-        condition=condition,
-        photos_per_item=photos_per_item,
-        limit_preview=preview
-    )
+    for item in data
