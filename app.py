@@ -1,112 +1,75 @@
-# ──────────────────────────────────────────────────────────────
-# Chatbay Analyzer → Flask + OpenAI Vision + Dropbox
-# v8.0 — optimized for Render deployment
-# ──────────────────────────────────────────────────────────────
+# app.py — Chatbay Analyzer API (v8.0)
+# Exposes:
+#   GET  /health
+#   POST /preview_csv  {input, condition, photos_per_item}
+#   POST /export_csv   {input, condition, photos_per_item}
+#
+# Notes:
+# - Wraps vision_test.analyze_item() so the same logic powers CLI & API
+# - CORS is controlled by FRONTEND_ORIGINS (comma-separated) in .env
 
-import os, io, json, tempfile, datetime
-from flask import Flask, jsonify, request, send_file
-from openai import OpenAI
-import dropbox
+import os
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+from dotenv import load_dotenv
 
-# ── setup
+load_dotenv()
+
+# Allow specific origins (comma-separated), or default to your domain
+_frontend_origins = os.getenv("FRONTEND_ORIGINS", "https://chatbay.site,https://www.chatbay.site")
+origins = [o.strip() for o in _frontend_origins.split(",") if o.strip()]
+
 app = Flask(__name__)
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+CORS(app, resources={r"/*": {"origins": origins}})
 
-# ── dropbox client factory
-def get_dbx():
-    return dropbox.Dropbox(
-        oauth2_refresh_token=os.getenv("DROPBOX_REFRESH_TOKEN"),
-        app_key=os.getenv("DROPBOX_APP_KEY"),
-        app_secret=os.getenv("DROPBOX_APP_SECRET"),
-    )
+# Import analyzer after env is ready
+from vision_test import analyze_item  # noqa: E402
 
-# ──────────────────────────────────────────────────────────────
-# 🔹 basic health check
-@app.route("/health")
+@app.get("/health")
 def health():
-    return jsonify({"status": "ok", "time": datetime.datetime.utcnow().isoformat()})
+    return jsonify({
+        "ok": True,
+        "service": "chatbay-analyzer",
+        "origins": origins,
+    })
 
-# ──────────────────────────────────────────────────────────────
-# 🔹 vision preview endpoint
-@app.route("/preview_csv")
+def _payload_defaults(data: dict):
+    return {
+        "input": (data.get("input") or "").strip(),
+        "condition": (data.get("condition") or os.getenv("DEFAULT_CONDITION", "preowned")).strip().lower(),
+        "photos_per_item": int(data.get("photos_per_item") or os.getenv("DEFAULT_PHOTOS_PER_ITEM", 4)),
+    }
+
+@app.post("/preview_csv")
 def preview_csv():
-    """Return one-item Vision analysis preview."""
-    from vision_test import analyze_images_with_vision
-    gallery = request.args.get("gallery")
-    condition = request.args.get("condition", "preowned")
-    photos_per_item = int(request.args.get("photos_per_item", 4))
-
-    if not gallery:
-        return jsonify({"error": "Missing gallery parameter"}), 400
-
     try:
-        result = analyze_images_with_vision(
-            gallery_urls=gallery.split(","),
-            condition=condition,
-            photos_per_item=photos_per_item,
-            limit_preview=True,
+        data = request.get_json(force=True) or {}
+        p = _payload_defaults(data)
+        result = analyze_item(
+            input_arg=p["input"],
+            condition=p["condition"],
+            photos_per_item=p["photos_per_item"],
+            preview=True
         )
-        return jsonify(result)
+        return jsonify(result), 200
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"ok": False, "error": str(e)}), 400
 
-# ──────────────────────────────────────────────────────────────
-# 🔹 full export endpoint
-@app.route("/export_csv")
+@app.post("/export_csv")
 def export_csv():
-    """Generate full CSV and upload to Dropbox."""
-    from vision_test import analyze_images_with_vision, build_csv_bytes
-
-    gallery = request.args.get("gallery")
-    condition = request.args.get("condition", "preowned")
-    photos_per_item = int(request.args.get("photos_per_item", 4))
-
-    if not gallery:
-        return jsonify({"error": "Missing gallery parameter"}), 400
-
     try:
-        data = analyze_images_with_vision(
-            gallery_urls=gallery.split(","),
-            condition=condition,
-            photos_per_item=photos_per_item,
-            limit_preview=False,
+        data = request.get_json(force=True) or {}
+        p = _payload_defaults(data)
+        result = analyze_item(
+            input_arg=p["input"],
+            condition=p["condition"],
+            photos_per_item=p["photos_per_item"],
+            preview=False
         )
-        csv_bytes, filename = build_csv_bytes(data)
-
-        # upload to dropbox
-        dbx = get_dbx()
-        folder = os.getenv("DROPBOX_CSV_FOLDER", "/csv")
-        path = f"{folder}/{filename}"
-        dbx.files_upload(csv_bytes.getvalue(), path, mode=dropbox.files.WriteMode.overwrite)
-
-        return send_file(
-            io.BytesIO(csv_bytes.getvalue()),
-            mimetype="text/csv",
-            as_attachment=True,
-            download_name=filename,
-        )
+        return jsonify(result), 200
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"ok": False, "error": str(e)}), 400
 
-# ──────────────────────────────────────────────────────────────
-# 🔹 latest CSV download link
-@app.route("/latest_csv_link")
-def latest_csv_link():
-    """Return the most recent CSV’s temporary Dropbox link."""
-    try:
-        dbx = get_dbx()
-        folder = os.getenv("DROPBOX_CSV_FOLDER", "/csv")
-        res = dbx.files_list_folder(folder)
-        files = [e for e in res.entries if isinstance(e, dropbox.files.FileMetadata)]
-        if not files:
-            return {"error": "No CSV found"}, 404
-        newest = max(files, key=lambda e: e.client_modified)
-        link = dbx.files_get_temporary_link(newest.path_lower).link
-        return {"filename": newest.name, "link": link}
-    except Exception as e:
-        return {"error": str(e)}, 500
-
-# ──────────────────────────────────────────────────────────────
-# run local (Render uses gunicorn)
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
+    # Local dev
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
