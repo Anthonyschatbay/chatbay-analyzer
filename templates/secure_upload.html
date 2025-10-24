@@ -7,28 +7,33 @@
     body {
       font-family: system-ui, sans-serif;
       background: #fafafa;
-      max-width: 600px;
+      max-width: 640px;
       margin: 2rem auto;
       padding: 2rem;
       border-radius: 12px;
       box-shadow: 0 0 20px rgba(0,0,0,0.05);
     }
+    h2 { text-align:center; margin-bottom:1rem; }
     label { display:block; margin-top:1rem; font-weight:600; }
     input,textarea,button,select {
-      width:100%; padding:0.6rem; border-radius:6px; border:1px solid #ccc;
-      margin-top:0.3rem; font-size:1rem;
+      width:100%; padding:0.6rem; border-radius:6px;
+      border:1px solid #ccc; margin-top:0.3rem; font-size:1rem;
     }
+    .btn-row { display:flex; gap:0.5rem; margin-top:1.2rem; }
     button {
-      background:#222; color:#fff; border:none; margin-top:1.2rem; cursor:pointer;
+      flex:1; background:#222; color:#fff; border:none;
+      padding:0.7rem; cursor:pointer; border-radius:6px;
     }
+    button.download { background:#005bbb; }
     pre {
       background:#f5f5f5; padding:1rem; border-radius:6px;
-      font-size:0.9rem; overflow-x:auto;
+      font-size:0.9rem; overflow-x:auto; margin-top:1rem;
     }
   </style>
 </head>
 <body>
-  <h2>🔒 Chatbay Analyzer (Secure Upload)</h2>
+  <h2>🔒 Chatbay Analyzer</h2>
+
   <form id="analyzeForm">
     <label>Password:</label>
     <input id="password" type="password" required placeholder="Your upload password">
@@ -44,9 +49,12 @@
     <input id="photos" type="number" min="1" max="12" value="4">
 
     <label>Gallery or image URLs (comma-separated):</label>
-    <textarea id="input" rows="4" required></textarea>
+    <textarea id="input" rows="4" required placeholder="https://postimg.cc/gallery/XXXX,https://i.postimg.cc/...jpg"></textarea>
 
-    <button type="submit">Analyze (Preview CSV)</button>
+    <div class="btn-row">
+      <button id="previewBtn" type="submit">Preview JSON</button>
+      <button id="exportBtn" type="button" class="download">Download CSV</button>
+    </div>
   </form>
 
   <h3>Response:</h3>
@@ -55,26 +63,60 @@
   <script>
     const form = document.getElementById('analyzeForm');
     const output = document.getElementById('output');
+    const exportBtn = document.getElementById('exportBtn');
 
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      output.textContent = "⏳ Sending request...";
-      const payload = {
+    // Shared payload builder
+    function getPayload() {
+      return {
         input: document.getElementById('input').value.trim(),
         condition: document.getElementById('condition').value,
         photos_per_item: parseInt(document.getElementById('photos').value),
         password: document.getElementById('password').value.trim()
       };
+    }
+
+    // Handle Preview (JSON)
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      output.textContent = "⏳ Sending request to /preview_csv...";
       try {
         const res = await fetch('/preview_csv', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
+          body: JSON.stringify(getPayload())
         });
         const data = await res.json();
         output.textContent = JSON.stringify(data, null, 2);
       } catch (err) {
         output.textContent = "❌ Error: " + err.message;
+      }
+    });
+
+    // Handle Export (CSV)
+    exportBtn.addEventListener('click', async () => {
+      output.textContent = "⏳ Generating CSV...";
+      try {
+        const res = await fetch('/export_csv', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(getPayload())
+        });
+        if (!res.ok) throw new Error("Server returned " + res.status);
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        // Try to extract filename from header, else fallback
+        const header = res.headers.get('Content-Disposition') || '';
+        const match = header.match(/filename="?([^"]+)"?/);
+        a.download = match ? match[1] : 'chatbay_export.csv';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        output.textContent = "✅ CSV downloaded successfully.";
+      } catch (err) {
+        output.textContent = "❌ CSV export failed: " + err.message;
       }
     });
   </script>
