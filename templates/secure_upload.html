@@ -7,7 +7,7 @@
     body {
       font-family: system-ui, sans-serif;
       background: #fafafa;
-      max-width: 640px;
+      max-width: 720px;
       margin: 2rem auto;
       padding: 2rem;
       border-radius: 12px;
@@ -19,16 +19,66 @@
       width:100%; padding:0.6rem; border-radius:6px;
       border:1px solid #ccc; margin-top:0.3rem; font-size:1rem;
     }
-    .btn-row { display:flex; gap:0.5rem; margin-top:1.2rem; }
+    .row { display:grid; grid-template-columns: 1fr 1fr; gap:.75rem; }
+    .btn-row { display:flex; gap:0.5rem; margin-top:1.2rem; flex-wrap:wrap; }
     button {
       flex:1; background:#222; color:#fff; border:none;
       padding:0.7rem; cursor:pointer; border-radius:6px;
+      transition:background .2s;
     }
+    button:hover { background:#333; }
     button.download { background:#005bbb; }
+    button.continue {
+      background:#059669; /* green */
+      display:none;
+      flex:1;
+      animation: fadeIn .4s ease forwards;
+    }
+    @keyframes fadeIn {
+      from { opacity:0; transform:translateY(8px); }
+      to { opacity:1; transform:translateY(0); }
+    }
     pre {
       background:#f5f5f5; padding:1rem; border-radius:6px;
       font-size:0.9rem; overflow-x:auto; margin-top:1rem;
     }
+
+    /* ───────────────── CSV Preview Styling (eBay-like) ───────────────── */
+    .csv-box {
+      background:#fff; border:1px solid #d1d5db; border-radius:8px;
+      overflow:auto; margin-top:1rem;
+    }
+    table.csv {
+      width:100%;
+      border-collapse:collapse;
+      table-layout: fixed;          /* equal column widths */
+      font-size:0.92rem;
+      min-width:780px;
+    }
+    table.csv thead th {
+      background:#e5e7eb;          /* gray header like sheet */
+      color:#111827;               /* near-black */
+      font-weight:700;
+      text-align:left;
+      padding:8px 10px;
+      border-right:1px solid #d1d5db;
+      border-bottom:1px solid #9ca3af;
+    }
+    table.csv thead th:last-child { border-right:none; }
+    table.csv td {
+      border-top:1px solid #e5e7eb;
+      border-right:1px solid #e5e7eb;
+      padding:8px 10px;
+      vertical-align:top;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; /* monospace rows */
+      white-space:pre-wrap; word-break:break-word;
+    }
+    table.csv td:last-child { border-right:none; }
+    /* Make 6 equal columns */
+    table.csv th, table.csv td { width: calc(100% / 6); }
+    /* ─────────────────────────────────────────────────────────────────── */
+
+    .muted { color:#6b7280; font-size:0.9rem; }
   </style>
 </head>
 <body>
@@ -38,75 +88,152 @@
     <label>Password:</label>
     <input id="password" type="password" required placeholder="Your upload password">
 
-    <label>Condition:</label>
-    <select id="condition">
-      <option value="preowned">Preowned</option>
-      <option value="new">New</option>
-      <option value="parts">Parts</option>
-    </select>
+    <div class="row">
+      <div>
+        <label>Condition:</label>
+        <select id="condition">
+          <option value="preowned">Preowned</option>
+          <option value="new">New</option>
+          <option value="parts">Parts</option>
+        </select>
+      </div>
+      <div>
+        <label>Photos per item:</label>
+        <input id="photos" type="number" min="1" max="12" value="4">
+      </div>
+    </div>
 
-    <label>Photos per item:</label>
-    <input id="photos" type="number" min="1" max="12" value="4">
+    <label>Cost (sample preview only):</label>
+    <input id="cost" type="text" placeholder="e.g. 12.50">
 
     <label>Gallery or image URLs (comma-separated):</label>
     <textarea id="input" rows="4" required placeholder="https://postimg.cc/gallery/XXXX,https://i.postimg.cc/...jpg"></textarea>
 
     <div class="btn-row">
-      <button id="previewBtn" type="submit">Preview JSON</button>
+      <button id="previewBtn" type="submit">Preview First Item</button>
       <button id="exportBtn" type="button" class="download">Download CSV</button>
+      <button id="continueBtn" type="button" class="continue">Continue with Listings →</button>
     </div>
   </form>
 
   <h3>Response:</h3>
+  <div id="csvPreview" class="csv-box" style="display:none;"></div>
+  <div class="muted" id="csvNote" style="display:none; margin-top:6px;">
+    This is a preview of how your CSV will look (first item only). Use “Continue with Listings” or “Download CSV” for the full batch.
+  </div>
   <pre id="output">Waiting for input...</pre>
 
   <script>
     const form = document.getElementById('analyzeForm');
     const output = document.getElementById('output');
     const exportBtn = document.getElementById('exportBtn');
+    const continueBtn = document.getElementById('continueBtn');
+    const csvPreview = document.getElementById('csvPreview');
+    const csvNote = document.getElementById('csvNote');
 
-    // Shared payload builder
-    function getPayload() {
-      return {
-        input: document.getElementById('input').value.trim(),
-        condition: document.getElementById('condition').value,
-        photos_per_item: parseInt(document.getElementById('photos').value),
-        password: document.getElementById('password').value.trim()
-      };
+    // Preview headers requested
+    const CSV_HEADERS = [
+      "Custom label (SKU)",
+      "Category ID",
+      "Title",
+      "Schedule Time",
+      "Start price",
+      "Description"
+    ];
+
+    function escapeHtml(s) {
+      return s
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
     }
 
-    // Handle Preview (JSON)
+    // Render the small preview table with eBay-like styling
+    function renderCsvPreview(item) {
+      const scheduleTime = new Date(Date.now() + 86400000)
+        .toISOString()
+        .replace("T", " ")
+        .slice(0, 19); // YYYY-MM-DD HH:MM:SS
+
+      const row = [
+        "", // Custom label (SKU)
+        item?.category_id || "",
+        item?.title || "",
+        scheduleTime,
+        "29",
+        item?.title || ""
+      ];
+
+      const thead = "<thead><tr>" +
+        CSV_HEADERS.map(h => `<th>${escapeHtml(h)}</th>`).join("") +
+        "</tr></thead>";
+      const tbody = "<tbody><tr>" +
+        row.map(v => `<td>${escapeHtml(v)}</td>`).join("") +
+        "</tr></tbody>";
+      return `<table class="csv">${thead}${tbody}</table>`;
+    }
+
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
+      csvPreview.style.display = "none";
+      csvNote.style.display = "none";
+      continueBtn.style.display = "none";
       output.textContent = "⏳ Sending request to /preview_csv...";
+
       try {
         const res = await fetch('/preview_csv', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(getPayload())
+          body: JSON.stringify({
+            input: document.getElementById('input').value.trim(),
+            condition: document.getElementById('condition').value,
+            photos_per_item: parseInt(document.getElementById('photos').value),
+            password: document.getElementById('password').value.trim()
+          })
         });
         const data = await res.json();
         output.textContent = JSON.stringify(data, null, 2);
+
+        if (Array.isArray(data) && data.length > 0) {
+          csvPreview.innerHTML = renderCsvPreview(data[0]);
+          csvPreview.style.display = "block";
+          csvNote.style.display = "block";
+          continueBtn.style.display = "block";
+        }
       } catch (err) {
         output.textContent = "❌ Error: " + err.message;
       }
     });
 
-    // Handle Export (CSV)
+    continueBtn.addEventListener('click', async () => {
+      output.textContent = "🚀 Generating full CSV...";
+      await generateCSV();
+    });
+
     exportBtn.addEventListener('click', async () => {
       output.textContent = "⏳ Generating CSV...";
+      await generateCSV();
+    });
+
+    async function generateCSV() {
       try {
         const res = await fetch('/export_csv', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(getPayload())
+          body: JSON.stringify({
+            input: document.getElementById('input').value.trim(),
+            condition: document.getElementById('condition').value,
+            photos_per_item: parseInt(document.getElementById('photos').value),
+            password: document.getElementById('password').value.trim()
+          })
         });
         if (!res.ok) throw new Error("Server returned " + res.status);
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        // Try to extract filename from header, else fallback
         const header = res.headers.get('Content-Disposition') || '';
         const match = header.match(/filename="?([^"]+)"?/);
         a.download = match ? match[1] : 'chatbay_export.csv';
@@ -118,7 +245,7 @@
       } catch (err) {
         output.textContent = "❌ CSV export failed: " + err.message;
       }
-    });
+    }
   </script>
 </body>
 </html>
